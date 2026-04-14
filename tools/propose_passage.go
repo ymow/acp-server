@@ -32,12 +32,23 @@ func (t *ProposePassage) EstimateCost(_ *execution.Context, _ map[string]any) fl
 func (t *ProposePassage) ExecuteLogic(_ *execution.Context, params map[string]any) (map[string]any, error) {
 	wc, _ := intParam(params, "word_count")
 	draftID := "draft_" + id.Agent()[6:] // reuse random8
-	return map[string]any{
+	result := map[string]any{
 		"draft_id":   draftID,
 		"word_count": wc,
 		"detail":     fmt.Sprintf("Draft %s proposed with %d words.", draftID, wc),
 		"is_final":   false,
-	}, nil
+	}
+	// Optional anti-gaming fields: stored in audit log params_preview (content_hash masked to 8 chars).
+	if chapter, ok := params["chapter"].(string); ok && chapter != "" {
+		result["chapter"] = chapter
+	}
+	if summary, ok := params["summary"].(string); ok && summary != "" {
+		result["summary"] = summary
+	}
+	if contentHash, ok := params["content_hash"].(string); ok && contentHash != "" {
+		result["content_hash"] = contentHash
+	}
+	return result, nil
 }
 
 func (t *ProposePassage) CalculateSideEffects(ctx *execution.Context, _ map[string]any, _ map[string]any) execution.SideEffects {

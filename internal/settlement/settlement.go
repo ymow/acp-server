@@ -87,8 +87,8 @@ func Generate(db *sql.DB, covSvc *covenant.Service, covenantID, triggerLogID, tr
 		INSERT INTO settlement_outputs
 		  (output_id, covenant_id, trigger_log_id, trigger_log_hash,
 		   total_tokens, owner_share_pct, platform_share_pct, contributor_pool_pct,
-		   distributions, generated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		   distributions, generated_at, status)
+		VALUES (?,?,?,?,?,?,?,?,?,?,'pending_confirmation')`,
 		out.OutputID, covenantID, triggerLogID, triggerLogHash,
 		total, cov.OwnerSharePct, cov.PlatformSharePct, cov.ContributorPoolPct,
 		string(distsJSON), out.GeneratedAt.Format(time.RFC3339Nano),

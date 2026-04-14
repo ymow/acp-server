@@ -21,9 +21,10 @@ func (t *ApproveDraft) CheckPreconditions(ctx *execution.Context, params map[str
 	if !ctx.Member.IsOwner {
 		return fmt.Errorf("only covenant owner can approve drafts")
 	}
+	logID, _ := params["log_id"].(string)
 	draftID, _ := params["draft_id"].(string)
-	if draftID == "" {
-		return fmt.Errorf("draft_id is required")
+	if logID == "" && draftID == "" {
+		return fmt.Errorf("log_id or draft_id is required")
 	}
 	return nil
 }
@@ -31,6 +32,7 @@ func (t *ApproveDraft) CheckPreconditions(ctx *execution.Context, params map[str
 func (t *ApproveDraft) EstimateCost(_ *execution.Context, _ map[string]any) float64 { return 5 }
 
 func (t *ApproveDraft) ExecuteLogic(ctx *execution.Context, params map[string]any) (map[string]any, error) {
+	logID, _ := params["log_id"].(string)
 	draftID, _ := params["draft_id"].(string)
 	wc, _ := intParam(params, "word_count")
 	ratio, _ := floatParam(params, "acceptance_ratio")
@@ -41,6 +43,25 @@ func (t *ApproveDraft) ExecuteLogic(ctx *execution.Context, params map[string]an
 		return nil, fmt.Errorf("word_count must be > 0 for approval")
 	}
 
+	// log_id path: look up proposer from audit_logs, then find their pending draft.
+	if logID != "" && draftID == "" {
+		var proposerAgentID string
+		err := ctx.DB.QueryRow(
+			`SELECT agent_id FROM audit_logs WHERE log_id=? AND covenant_id=?`,
+			logID, ctx.Covenant.CovenantID,
+		).Scan(&proposerAgentID)
+		if err != nil {
+			return nil, fmt.Errorf("log_id %q not found in this covenant: %w", logID, err)
+		}
+		err = ctx.DB.QueryRow(
+			`SELECT draft_id FROM pending_tokens WHERE covenant_id=? AND agent_id=? LIMIT 1`,
+			ctx.Covenant.CovenantID, proposerAgentID,
+		).Scan(&draftID)
+		if err != nil {
+			return nil, fmt.Errorf("no pending draft for agent %q (log %s): %w", proposerAgentID, logID, err)
+		}
+	}
+
 	proposerAgentID, err := tokens.ClaimPending(ctx.DB, ctx.Covenant.CovenantID, draftID)
 	if err != nil {
 		return nil, err
@@ -48,6 +69,7 @@ func (t *ApproveDraft) ExecuteLogic(ctx *execution.Context, params map[string]an
 
 	return map[string]any{
 		"draft_id":          draftID,
+		"log_id":            logID,
 		"proposer_agent_id": proposerAgentID,
 		"word_count":        wc,
 		"acceptance_ratio":  ratio,

@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS covenants (
     contributor_pool_pct REAL NOT NULL DEFAULT 70.0,
     budget_limit    REAL NOT NULL DEFAULT 0,  -- 0 = unlimited
     owner_token     TEXT NOT NULL DEFAULT '', -- A-2: bearer token for owner-only operations
+    token_rules_json TEXT NOT NULL DEFAULT '', -- JSON array of TokenRule objects
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
@@ -122,7 +123,9 @@ CREATE TABLE IF NOT EXISTS settlement_outputs (
     platform_share_pct REAL NOT NULL,
     contributor_pool_pct REAL NOT NULL,
     distributions  TEXT NOT NULL,             -- JSON array
-    generated_at    TEXT NOT NULL
+    generated_at    TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending_confirmation', -- pending_confirmation | confirmed
+    confirmed_at    TEXT                       -- NULL until confirmed
 );
 
 -- ── Session Tokens (REVIEW-14) ─────────────────────────────────────────────

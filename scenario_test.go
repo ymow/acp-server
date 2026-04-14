@@ -44,6 +44,19 @@ func TestE2EScenario(t *testing.T) {
 	t.Logf("【建立成功】 Covenant ID = %s, Owner Agent = %s", cov.CovenantID, ownerMem.AgentID)
 
 	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	// 步驟 1b：AC-1 — configure_token_rules（DRAFT 狀態下，activate_covenant 前）
+	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	cfgReceipt, err := engine.Run(cov.CovenantID, ownerMem.AgentID, "sess_cfg",
+		&tools.ConfigureTokenRules{}, map[string]any{
+			"rules": map[string]any{
+				"proposal_cost": 10,
+				"base_rate":     1.0,
+			},
+		})
+	mustOK(t, err, "configure_token_rules")
+	t.Logf("【AC-1】 configure_token_rules 成功 → audit_log_id=%s", cfgReceipt.ReceiptID)
+
+	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 	// 步驟 2：Owner 設定存取層級（業務語義：定義作者分潤比例）
 	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 	mustOK(t, covSvc.AddTier(cov.CovenantID, "author", "作者", 1.0, nil), "新增作者層級")
@@ -67,6 +80,33 @@ func TestE2EScenario(t *testing.T) {
 	agentB, err := covSvc.Join(cov.CovenantID, "pid_writer_carol", "senior")
 	mustOK(t, err, "Agent B 加入")
 	t.Logf("【加入成功】 Agent B = %s (資深作者層級，1.5x 加成)", agentB.AgentID)
+
+	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	// 步驟 4b：AC-2 — approve_agent × 2（Owner 手動核准兩位 Agent）
+	// 先將 agents 設為 pending（模擬需要審批的入會流程）
+	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	_, err = conn.Exec(`UPDATE covenant_members SET status='pending' WHERE covenant_id=? AND agent_id=?`,
+		cov.CovenantID, agentA.AgentID)
+	mustOK(t, err, "設定 Agent A 為 pending")
+	_, err = conn.Exec(`UPDATE covenant_members SET status='pending' WHERE covenant_id=? AND agent_id=?`,
+		cov.CovenantID, agentB.AgentID)
+	mustOK(t, err, "設定 Agent B 為 pending")
+
+	aaReceipt, err := engine.Run(cov.CovenantID, ownerMem.AgentID, "sess_owner",
+		&tools.ApproveAgent{}, map[string]any{"agent_id": agentA.AgentID})
+	mustOK(t, err, "approve_agent Agent A")
+	if aaReceipt.Extra["status"] != "active" {
+		t.Errorf("【失敗】 approve_agent Agent A 應回傳 active，實際=%v", aaReceipt.Extra["status"])
+	}
+	t.Logf("【AC-2】 approve_agent Agent A → status=%v, audit_log_id=%s", aaReceipt.Extra["status"], aaReceipt.ReceiptID)
+
+	abReceipt, err := engine.Run(cov.CovenantID, ownerMem.AgentID, "sess_owner",
+		&tools.ApproveAgent{}, map[string]any{"agent_id": agentB.AgentID})
+	mustOK(t, err, "approve_agent Agent B")
+	if abReceipt.Extra["status"] != "active" {
+		t.Errorf("【失敗】 approve_agent Agent B 應回傳 active，實際=%v", abReceipt.Extra["status"])
+	}
+	t.Logf("【AC-2】 approve_agent Agent B → status=%v, audit_log_id=%s", abReceipt.Extra["status"], abReceipt.ReceiptID)
 
 	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 	// 步驟 5：啟動創作（OPEN → ACTIVE）
@@ -199,6 +239,29 @@ func TestE2EScenario(t *testing.T) {
 		t.Fatal("結算報告缺少 output_id")
 	}
 	t.Logf("【結算報告】 Output ID = %s", outputID)
+
+	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	// 步驟 10b：AC-8 — confirm_settlement_output → Covenant 狀態到 SETTLED
+	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+	confirmReceipt, err := engine.Run(cov.CovenantID, ownerMem.AgentID, "sess_settle",
+		&tools.ConfirmSettlementOutput{}, map[string]any{
+			"settlement_output_id": outputID,
+		})
+	mustOK(t, err, "confirm_settlement_output")
+	if confirmReceipt.Extra["status"] != "SETTLED" {
+		t.Errorf("【失敗】 confirm_settlement_output 應回傳 SETTLED，實際=%v", confirmReceipt.Extra["status"])
+	} else {
+		t.Logf("【AC-8】 confirm_settlement_output 成功 → status=%v", confirmReceipt.Extra["status"])
+	}
+
+	// 驗證 Covenant 實際狀態為 SETTLED
+	finalState, err := covSvc.State(cov.CovenantID)
+	mustOK(t, err, "讀取最終 Covenant 狀態")
+	if finalState != "SETTLED" {
+		t.Errorf("【失敗】 Covenant 最終狀態應為 SETTLED，實際=%s", finalState)
+	} else {
+		t.Logf("【AC-8】 Covenant 最終狀態確認: %s", finalState)
+	}
 
 	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 	// 步驟 11：驗證結算比例 — OwnerShare + ContributorPool = 100%

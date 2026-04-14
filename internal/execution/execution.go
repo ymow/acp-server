@@ -193,6 +193,13 @@ func maskSensitive(params map[string]any) map[string]any {
 	for k, v := range params {
 		if sensitive[k] {
 			out[k] = fmt.Sprintf("*** (length: %d)", len(fmt.Sprint(v)))
+		} else if k == "content_hash" {
+			s := fmt.Sprint(v)
+			if len(s) > 8 {
+				out[k] = s[:8] + "..."
+			} else {
+				out[k] = s
+			}
 		} else {
 			out[k] = v
 		}

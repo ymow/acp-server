@@ -63,6 +63,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /tools/propose_passage", s.toolHandler(&tools.ProposePassage{}))
 	s.mux.HandleFunc("POST /tools/approve_draft", s.toolHandler(&tools.ApproveDraft{}))
 	s.mux.HandleFunc("POST /tools/generate_settlement_output", s.toolHandler(&tools.GenerateSettlement{}))
+	s.mux.HandleFunc("POST /tools/configure_token_rules", s.toolHandler(&tools.ConfigureTokenRules{}))
+	s.mux.HandleFunc("POST /tools/approve_agent", s.toolHandler(&tools.ApproveAgent{}))
+	s.mux.HandleFunc("POST /tools/confirm_settlement_output", s.toolHandler(&tools.ConfirmSettlementOutput{}))
 
 	// ── Audit & verification ─────────────────────────────────────────────────
 	s.mux.HandleFunc("GET /covenants/{covenant_id}/audit/verify", s.handleVerifyChain)
