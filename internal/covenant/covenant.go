@@ -2,7 +2,9 @@
 package covenant
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -19,28 +21,30 @@ var transitions = map[string]string{
 }
 
 type Covenant struct {
-	CovenantID         string
-	Version            string
-	SpaceType          string
-	Title              string
-	Description        string
-	State              string
-	OwnerSharePct      float64
-	PlatformSharePct   float64
-	ContributorPoolPct float64
-	BudgetLimit        float64
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	CovenantID         string    `json:"covenant_id"`
+	Version            string    `json:"version"`
+	SpaceType          string    `json:"space_type"`
+	Title              string    `json:"title"`
+	Description        string    `json:"description"`
+	State              string    `json:"state"`
+	OwnerSharePct      float64   `json:"owner_share_pct"`
+	PlatformSharePct   float64   `json:"platform_share_pct"`
+	ContributorPoolPct float64   `json:"contributor_pool_pct"`
+	BudgetLimit        float64   `json:"budget_limit"`
+	// OwnerToken is populated only in the Create response (shown once, never again).
+	OwnerToken string    `json:"owner_token,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 type Member struct {
-	CovenantID string
-	PlatformID string
-	AgentID    string
-	TierID     string
-	IsOwner    bool
-	Status     string
-	JoinedAt   time.Time
+	CovenantID string    `json:"covenant_id"`
+	PlatformID string    `json:"platform_id"`
+	AgentID    string    `json:"agent_id"`
+	TierID     string    `json:"tier_id"`
+	IsOwner    bool      `json:"is_owner"`
+	Status     string    `json:"status"`
+	JoinedAt   time.Time `json:"joined_at"`
 }
 
 type Service struct{ db *sql.DB }
@@ -58,10 +62,11 @@ func (s *Service) Create(title, spaceType, ownerPlatformID string) (*Covenant, *
 	}
 	defer tx.Rollback()
 
+	ownerToken := randomHex(32)
 	_, err = tx.Exec(`
-		INSERT INTO covenants (covenant_id, title, space_type, state, created_at, updated_at)
-		VALUES (?, ?, ?, 'DRAFT', ?, ?)`,
-		covenantID, title, spaceType, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano),
+		INSERT INTO covenants (covenant_id, title, space_type, state, owner_token, created_at, updated_at)
+		VALUES (?, ?, ?, 'DRAFT', ?, ?, ?)`,
+		covenantID, title, spaceType, ownerToken, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano),
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create covenant: %w", err)
@@ -99,6 +104,7 @@ func (s *Service) Create(title, spaceType, ownerPlatformID string) (*Covenant, *
 		OwnerSharePct:      30,
 		PlatformSharePct:   0,
 		ContributorPoolPct: 70,
+		OwnerToken:         ownerToken, // shown once in Create response
 		CreatedAt:          now,
 		UpdatedAt:          now,
 	}
@@ -272,4 +278,20 @@ func (s *Service) State(covenantID string) (string, error) {
 		return "", err
 	}
 	return cov.State, nil
+}
+
+// GetOwnerToken returns the owner_token for a covenant (used to validate X-Owner-Token headers).
+func (s *Service) GetOwnerToken(covenantID string) (string, error) {
+	var token string
+	err := s.db.QueryRow(`SELECT owner_token FROM covenants WHERE covenant_id=?`, covenantID).Scan(&token)
+	if err != nil {
+		return "", fmt.Errorf("covenant %q: %w", covenantID, err)
+	}
+	return token, nil
+}
+
+func randomHex(n int) string {
+	b := make([]byte, n)
+	rand.Read(b)
+	return hex.EncodeToString(b)
 }

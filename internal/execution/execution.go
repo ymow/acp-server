@@ -21,17 +21,17 @@ type SideEffects struct {
 
 // Receipt is returned from Step 8.
 type Receipt struct {
-	ReceiptID    string
-	CovenantID   string
-	AgentID      string
-	ToolName     string
-	Status       string // "accepted" | "pending"
-	TokensAwarded int
-	CostDelta    float64
-	NetDelta     float64
-	Timestamp    string
-	LogHash      string
-	Extra        map[string]any // tool-specific extras
+	ReceiptID     string         `json:"receipt_id"`
+	CovenantID    string         `json:"covenant_id"`
+	AgentID       string         `json:"agent_id"`
+	ToolName      string         `json:"tool_name"`
+	Status        string         `json:"status"`
+	TokensAwarded int            `json:"tokens_awarded"`
+	CostDelta     float64        `json:"cost_delta"`
+	NetDelta      float64        `json:"net_delta"`
+	Timestamp     string         `json:"timestamp"`
+	LogHash       string         `json:"log_hash"`
+	Extra         map[string]any `json:"extra,omitempty"`
 }
 
 // Context holds the verified identity and covenant, populated by Step 1.

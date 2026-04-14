@@ -30,22 +30,34 @@ func EnsureCounter(db *sql.DB, covenantID string, limit float64) error {
 	return err
 }
 
-// CheckAndReserve atomically verifies the covenant has sufficient budget.
-// Returns an error if the budget is exhausted; nil means approved.
-// Uses BEGIN IMMEDIATE to emulate Redis Lua script atomicity in SQLite.
+// CheckAndReserve atomically checks and reserves budget for a single execution.
+// It uses a single UPDATE statement so two concurrent requests cannot both pass
+// when only one unit of budget remains (no SELECT-then-UPDATE race).
+// SetMaxOpenConns(1) in db.Open ensures SQLite single-writer ordering.
 func CheckAndReserve(db *sql.DB, covenantID string, estimatedCost float64) error {
 	if estimatedCost <= 0 {
 		return nil
 	}
 
-	tx, err := db.Begin()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	result, err := db.Exec(`
+		UPDATE budget_counters
+		SET budget_spent = budget_spent + ?,
+		    updated_at   = ?
+		WHERE covenant_id = ?
+		  AND (budget_limit = 0 OR (budget_limit - budget_spent) >= ?)`,
+		estimatedCost, now, covenantID, estimatedCost,
+	)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	if n, _ := result.RowsAffected(); n == 1 {
+		return nil // reserved
+	}
 
+	// rows affected == 0: either no counter row (unlimited) or budget exhausted
 	var limit, spent float64
-	err = tx.QueryRow(`SELECT budget_limit, budget_spent FROM budget_counters WHERE covenant_id=?`,
+	err = db.QueryRow(`SELECT budget_limit, budget_spent FROM budget_counters WHERE covenant_id = ?`,
 		covenantID).Scan(&limit, &spent)
 	if err == sql.ErrNoRows {
 		return nil // no counter = unlimited
@@ -53,11 +65,7 @@ func CheckAndReserve(db *sql.DB, covenantID string, estimatedCost float64) error
 	if err != nil {
 		return err
 	}
-
-	if limit > 0 && (limit-spent) < estimatedCost {
-		return fmt.Errorf("budget exhausted: remaining=%.8f required=%.8f", limit-spent, estimatedCost)
-	}
-	return tx.Commit()
+	return fmt.Errorf("budget exhausted: remaining=%.8f required=%.8f", limit-spent, estimatedCost)
 }
 
 // RecordSpend decrements the remaining budget after a successful execution (Step 7).

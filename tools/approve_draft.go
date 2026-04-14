@@ -28,7 +28,7 @@ func (t *ApproveDraft) CheckPreconditions(ctx *execution.Context, params map[str
 	return nil
 }
 
-func (t *ApproveDraft) EstimateCost(_ *execution.Context, _ map[string]any) float64 { return 0 }
+func (t *ApproveDraft) EstimateCost(_ *execution.Context, _ map[string]any) float64 { return 5 }
 
 func (t *ApproveDraft) ExecuteLogic(ctx *execution.Context, params map[string]any) (map[string]any, error) {
 	draftID, _ := params["draft_id"].(string)

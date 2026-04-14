@@ -27,7 +27,7 @@ func (t *ProposePassage) CheckPreconditions(ctx *execution.Context, params map[s
 	return nil
 }
 
-func (t *ProposePassage) EstimateCost(_ *execution.Context, _ map[string]any) float64 { return 0 }
+func (t *ProposePassage) EstimateCost(_ *execution.Context, _ map[string]any) float64 { return 10 }
 
 func (t *ProposePassage) ExecuteLogic(_ *execution.Context, params map[string]any) (map[string]any, error) {
 	wc, _ := intParam(params, "word_count")

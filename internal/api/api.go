@@ -11,8 +11,11 @@
 package api
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -74,6 +77,36 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /sessions/rotate", s.handleRotateToken)
 }
 
+// ── Auth helpers ─────────────────────────────────────────────────────────────
+
+// validateSession requires a valid X-Session-Token for the given agent+covenant.
+// A-1: called at every /tools/* entry point.
+func (s *Server) validateSession(r *http.Request, covenantID, agentID string) error {
+	token := r.Header.Get("X-Session-Token")
+	if token == "" {
+		return errors.New("X-Session-Token header required")
+	}
+	valid, _ := sessions.Validate(s.db, token, agentID, covenantID)
+	if !valid {
+		return errors.New("invalid or expired session token")
+	}
+	return nil
+}
+
+// validateOwnerToken requires a valid X-Owner-Token matching the covenant's owner_token.
+// A-2/A-4: called on /transition, /budget, /sessions/issue.
+func (s *Server) validateOwnerToken(r *http.Request, covenantID string) error {
+	token := r.Header.Get("X-Owner-Token")
+	if token == "" {
+		return errors.New("X-Owner-Token header required")
+	}
+	stored, err := s.covSvc.GetOwnerToken(covenantID)
+	if err != nil || stored == "" || stored != token {
+		return errors.New("invalid owner token")
+	}
+	return nil
+}
+
 // ── Covenant handlers ────────────────────────────────────────────────────────
 
 func (s *Server) handleCreateCovenant(w http.ResponseWriter, r *http.Request) {
@@ -127,6 +160,11 @@ func (s *Server) handleAddTier(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleTransition(w http.ResponseWriter, r *http.Request) {
 	covenantID := r.PathValue("covenant_id")
+	// A-4: only the covenant owner may trigger state transitions.
+	if err := s.validateOwnerToken(r, covenantID); err != nil {
+		jsonError(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
 	var req struct {
 		TargetState string `json:"target_state"`
 	}
@@ -213,17 +251,19 @@ func (s *Server) toolHandler(tool execution.Tool) http.HandlerFunc {
 			return
 		}
 
-		// REVIEW-14: validate session token when provided
-		if sessionToken != "" {
-			valid, inGrace := sessions.Validate(s.db, sessionToken, agentID, covenantID)
-			if !valid {
-				jsonError(w, "invalid or expired session token", http.StatusUnauthorized)
-				return
-			}
-			if inGrace {
-				w.Header().Set("Acp-Token-Warning",
-					"Token in grace period. Rotate immediately.")
-			}
+		// A-1: session token is mandatory for all tool endpoints.
+		if sessionToken == "" {
+			jsonError(w, "X-Session-Token header required", http.StatusUnauthorized)
+			return
+		}
+		valid, inGrace := sessions.Validate(s.db, sessionToken, agentID, covenantID)
+		if !valid {
+			jsonError(w, "invalid or expired session token", http.StatusUnauthorized)
+			return
+		}
+		if inGrace {
+			w.Header().Set("Acp-Token-Warning",
+				"Token in grace period. Rotate immediately.")
 		}
 
 		var body struct {
@@ -236,7 +276,7 @@ func (s *Server) toolHandler(tool execution.Tool) http.HandlerFunc {
 			body.Params = map[string]any{}
 		}
 
-		receipt, err := s.engine.Run(covenantID, agentID, sessionToken, tool, body.Params)
+		receipt, err := s.engine.Run(covenantID, agentID, sha256Hex(sessionToken), tool, body.Params)
 		if err != nil {
 			// Distinguish auth/validation errors (4xx) from internal errors (5xx)
 			status := http.StatusInternalServerError
@@ -266,6 +306,12 @@ func (s *Server) handleVerifyChain(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetAuditLog(w http.ResponseWriter, r *http.Request) {
 	covenantID := r.PathValue("covenant_id")
+	// A-4: any covenant participant may read the audit log.
+	sessionToken := r.Header.Get("X-Session-Token")
+	if sessionToken == "" || !sessions.ValidateForCovenant(s.db, sessionToken, covenantID) {
+		jsonError(w, "valid X-Session-Token for this covenant required", http.StatusUnauthorized)
+		return
+	}
 	limit := 50
 	rows, err := s.db.Query(`
 		SELECT log_id, sequence, agent_id, tool_name, result, tokens_delta,
@@ -306,7 +352,13 @@ func (s *Server) handleGetAuditLog(w http.ResponseWriter, r *http.Request) {
 // ── Budget handlers ───────────────────────────────────────────────────────────
 
 func (s *Server) handleGetBudget(w http.ResponseWriter, r *http.Request) {
-	state, err := budget.GetState(s.db, r.PathValue("covenant_id"))
+	covenantID := r.PathValue("covenant_id")
+	// A-4: budget is owner-only information.
+	if err := s.validateOwnerToken(r, covenantID); err != nil {
+		jsonError(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	state, err := budget.GetState(s.db, covenantID)
 	if err != nil {
 		jsonError(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -316,6 +368,11 @@ func (s *Server) handleGetBudget(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSetBudget(w http.ResponseWriter, r *http.Request) {
 	covenantID := r.PathValue("covenant_id")
+	// A-4: only the covenant owner may set the budget.
+	if err := s.validateOwnerToken(r, covenantID); err != nil {
+		jsonError(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
 	var req struct {
 		BudgetLimit float64 `json:"budget_limit"`
 	}
@@ -339,6 +396,11 @@ func (s *Server) handleIssueToken(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
+	// A-2: only the covenant owner may issue session tokens.
+	if err := s.validateOwnerToken(r, req.CovenantID); err != nil {
+		jsonError(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
 	raw, err := sessions.Issue(s.db, req.AgentID, req.CovenantID)
 	if err != nil {
 		jsonError(w, err.Error(), http.StatusInternalServerError)
@@ -358,6 +420,17 @@ func (s *Server) handleRotateToken(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
+	// A-3: only the token holder may rotate their own token.
+	currentToken := r.Header.Get("X-Session-Token")
+	if currentToken == "" {
+		jsonError(w, "X-Session-Token header required", http.StatusUnauthorized)
+		return
+	}
+	valid, _ := sessions.Validate(s.db, currentToken, req.AgentID, req.CovenantID)
+	if !valid {
+		jsonError(w, "invalid or expired session token", http.StatusUnauthorized)
+		return
+	}
 	newRaw, warning, err := sessions.Rotate(s.db, req.AgentID, req.CovenantID)
 	if err != nil {
 		jsonError(w, err.Error(), http.StatusInternalServerError)
@@ -368,6 +441,13 @@ func (s *Server) handleRotateToken(w http.ResponseWriter, r *http.Request) {
 }
 
 // ── JSON helpers ──────────────────────────────────────────────────────────────
+
+// sha256Hex returns the hex-encoded SHA-256 digest of s.
+// Used to store a token fingerprint in audit logs instead of the raw token.
+func sha256Hex(s string) string {
+	h := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(h[:])
+}
 
 func jsonOK(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")

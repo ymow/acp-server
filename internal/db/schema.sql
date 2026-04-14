@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS covenants (
     platform_share_pct REAL NOT NULL DEFAULT 0.0,
     contributor_pool_pct REAL NOT NULL DEFAULT 70.0,
     budget_limit    REAL NOT NULL DEFAULT 0,  -- 0 = unlimited
+    owner_token     TEXT NOT NULL DEFAULT '', -- A-2: bearer token for owner-only operations
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
@@ -72,6 +73,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     timestamp    TEXT NOT NULL,               -- RFC3339 UTC
     prev_log_id  TEXT,                        -- NULL for genesis
     hash         TEXT NOT NULL,               -- SHA-256 chain hash
+    spec_version TEXT NOT NULL DEFAULT 'ACR-300@2.0',
     UNIQUE(covenant_id, sequence)
 );
 CREATE INDEX IF NOT EXISTS idx_audit_covenant ON audit_logs(covenant_id, sequence);

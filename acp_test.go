@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/inkmesh/acp-server/internal/audit"
@@ -218,6 +219,52 @@ func TestSessionTokenRotation(t *testing.T) {
 	}
 
 	t.Logf("✓ Session rotation OK  warning=%q", warning)
+}
+
+// TestBudgetExhaustion verifies AC-5: once cumulative cost exceeds the budget
+// limit, the engine rejects further executions with "budget exhausted".
+// propose_passage costs 10 per call; budget is set to 50, so the 6th call fails.
+func TestBudgetExhaustion(t *testing.T) {
+	conn, err := db.Open(t.TempDir() + "/budget_exhaustion.db")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer conn.Close()
+
+	covSvc := covenant.New(conn)
+	engine := execution.New(conn, covSvc)
+
+	cov, _, err := covSvc.Create("Budget Exhaustion Test", "book", "pid_bex_owner")
+	must(t, err, "create")
+	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil), "add tier")
+	cov, err = covSvc.Transition(cov.CovenantID, "OPEN")
+	must(t, err, "→OPEN")
+	agent, err := covSvc.Join(cov.CovenantID, "pid_bex_agent", "contributor")
+	must(t, err, "join agent")
+	cov, err = covSvc.Transition(cov.CovenantID, "ACTIVE")
+	must(t, err, "→ACTIVE")
+
+	// Budget = 50; propose_passage costs 10 → 5 calls consume exactly 50.
+	must(t, budget.EnsureCounter(conn, cov.CovenantID, 50.0), "budget counter")
+
+	for i := 0; i < 5; i++ {
+		_, err := engine.Run(cov.CovenantID, agent.AgentID, "sess_bex",
+			&tools.ProposePassage{}, map[string]any{"word_count": 100})
+		if err != nil {
+			t.Fatalf("call %d should succeed: %v", i+1, err)
+		}
+	}
+
+	// 6th call must be rejected.
+	_, err = engine.Run(cov.CovenantID, agent.AgentID, "sess_bex",
+		&tools.ProposePassage{}, map[string]any{"word_count": 100})
+	if err == nil {
+		t.Fatal("AC-5: 6th call should be rejected due to budget exhaustion")
+	}
+	if !strings.Contains(err.Error(), "budget exhausted") {
+		t.Errorf("AC-5: expected 'budget exhausted' error, got: %v", err)
+	}
+	t.Logf("✓ AC-5  budget exhaustion correctly rejected: %v", err)
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────

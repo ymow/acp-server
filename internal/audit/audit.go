@@ -14,25 +14,26 @@ import (
 
 // Entry is a single audit log record.
 type Entry struct {
-	LogID        string
-	CovenantID   string
-	Sequence     int
-	AgentID      string
-	SessionID    string
-	ToolName     string
-	ToolType     string
-	ParamsHash   string
+	LogID         string
+	CovenantID    string
+	Sequence      int
+	AgentID       string
+	SessionID     string
+	ToolName      string
+	ToolType      string
+	ParamsHash    string
 	ParamsPreview map[string]any
-	Result       string
-	ResultDetail string
-	TokensDelta  int
-	CostDelta    float64
-	NetDelta     float64
-	StateBefore  string
-	StateAfter   string
-	Timestamp    time.Time
-	PrevLogID    string // empty for genesis
-	Hash         string
+	Result        string
+	ResultDetail  string
+	TokensDelta   int
+	CostDelta     float64
+	NetDelta      float64
+	StateBefore   string
+	StateAfter    string
+	Timestamp     time.Time
+	PrevLogID     string // empty for genesis
+	Hash          string
+	SpecVersion   string // ACR-300 spec version, e.g. "ACR-300@2.0"
 }
 
 // LogEvent records a single ACP event, auto-computing sequence and hash chain.
@@ -65,6 +66,9 @@ func LogEvent(db *sql.DB, e Entry) (*Entry, error) {
 	if e.Timestamp.IsZero() {
 		e.Timestamp = time.Now().UTC()
 	}
+	if e.SpecVersion == "" {
+		e.SpecVersion = "ACR-300@2.0"
+	}
 
 	// Compute params hash + preview
 	paramsJSON, _ := json.Marshal(e.ParamsPreview)
@@ -80,19 +84,22 @@ func LogEvent(db *sql.DB, e Entry) (*Entry, error) {
 		  (log_id, covenant_id, sequence, agent_id, session_id,
 		   tool_name, tool_type, params_hash, params_preview, result,
 		   result_detail, tokens_delta, cost_delta, net_delta,
-		   state_before, state_after, timestamp, prev_log_id, hash)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		   state_before, state_after, timestamp, prev_log_id, hash, spec_version)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		e.LogID, e.CovenantID, e.Sequence, e.AgentID, e.SessionID,
 		e.ToolName, e.ToolType, e.ParamsHash, string(preview), e.Result,
 		e.ResultDetail, e.TokensDelta, e.CostDelta, e.NetDelta,
 		e.StateBefore, e.StateAfter,
 		e.Timestamp.UTC().Format(time.RFC3339Nano),
-		nullableStr(e.PrevLogID), e.Hash,
+		nullableStr(e.PrevLogID), e.Hash, e.SpecVersion,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert audit log: %w", err)
 	}
-	return &e, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("audit commit: %w", err)
+	}
+	return &e, nil
 }
 
 // VerifyChain re-derives every hash in the chain and checks prev_log_id links.
@@ -101,7 +108,7 @@ func VerifyChain(db *sql.DB, covenantID string) (bool, []string) {
 	rows, err := db.Query(`
 		SELECT log_id, sequence, agent_id, session_id, tool_name, tool_type,
 		       params_hash, result, result_detail, tokens_delta, cost_delta, net_delta,
-		       state_before, state_after, timestamp, prev_log_id, hash
+		       state_before, state_after, timestamp, prev_log_id, hash, spec_version
 		FROM audit_logs WHERE covenant_id=? ORDER BY sequence`, covenantID)
 	if err != nil {
 		return false, []string{err.Error()}
@@ -120,7 +127,7 @@ func VerifyChain(db *sql.DB, covenantID string) (bool, []string) {
 		err := rows.Scan(
 			&e.LogID, &e.Sequence, &e.AgentID, &e.SessionID, &e.ToolName, &e.ToolType,
 			&e.ParamsHash, &e.Result, &e.ResultDetail, &e.TokensDelta, &e.CostDelta, &e.NetDelta,
-			&e.StateBefore, &e.StateAfter, &tsStr, &prevIDNull, &e.Hash,
+			&e.StateBefore, &e.StateAfter, &tsStr, &prevIDNull, &e.Hash, &e.SpecVersion,
 		)
 		if err != nil {
 			violations = append(violations, fmt.Sprintf("seq %d: scan error: %v", e.Sequence, err))
@@ -169,6 +176,7 @@ func computeHash(e Entry) string {
 		e.StateAfter,
 		e.Timestamp.UTC().Format(time.RFC3339Nano),
 		e.ParamsHash,
+		e.SpecVersion,
 	}
 	payload := strings.Join(components, "|")
 	h := sha256.Sum256([]byte(payload))

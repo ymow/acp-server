@@ -24,7 +24,7 @@ func (t *GenerateSettlement) CheckPreconditions(ctx *execution.Context, _ map[st
 	return nil
 }
 
-func (t *GenerateSettlement) EstimateCost(_ *execution.Context, _ map[string]any) float64 { return 0 }
+func (t *GenerateSettlement) EstimateCost(_ *execution.Context, _ map[string]any) float64 { return 20 }
 
 func (t *GenerateSettlement) ExecuteLogic(_ *execution.Context, _ map[string]any) (map[string]any, error) {
 	return map[string]any{

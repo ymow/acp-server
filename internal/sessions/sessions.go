@@ -111,6 +111,37 @@ func Validate(db *sql.DB, rawToken, agentID, covenantID string) (bool, bool) {
 	}
 }
 
+// ValidateForCovenant checks if a raw token is valid for any agent in the given covenant.
+// Used for endpoints that require any covenant participant (e.g. /audit).
+func ValidateForCovenant(db *sql.DB, rawToken, covenantID string) bool {
+	hash := hashToken(rawToken)
+	var status string
+	var rotatedStr sql.NullString
+	err := db.QueryRow(`
+		SELECT status, rotated_at FROM session_tokens
+		WHERE token_hash=? AND covenant_id=?`,
+		hash, covenantID,
+	).Scan(&status, &rotatedStr)
+	if err != nil {
+		return false
+	}
+	switch status {
+	case "active":
+		return true
+	case "grace":
+		if !rotatedStr.Valid {
+			return false
+		}
+		rotated, err := time.Parse(time.RFC3339Nano, rotatedStr.String)
+		if err != nil {
+			return false
+		}
+		return time.Since(rotated) <= GracePeriod
+	default:
+		return false
+	}
+}
+
 // ExpireGraceTokens sweeps grace tokens past their window. Safe to call periodically.
 func ExpireGraceTokens(db *sql.DB) (int64, error) {
 	cutoff := time.Now().UTC().Add(-GracePeriod).Format(time.RFC3339Nano)
