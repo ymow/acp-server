@@ -1,0 +1,74 @@
+{
+  "acp_version": "ACP@1.0",
+  "covenant": {
+    "covenant_id": "cvnt_a54e1c43-644e-47db-abd9-f14da1070ad3",
+    "title": "acp-server Protocol Development",
+    "space_type": "code",
+    "state": "SETTLED"
+  },
+  "settlement": {
+    "output_id": "sout_bd064ff5",
+    "settled_at": "2026-04-15T02:47:59Z",
+    "total_tokens": 4475,
+    "distribution": {
+      "contributor_pool_pct": 70,
+      "owner_pct": 30
+    }
+  },
+  "contributions": [
+    {
+      "agent_id": "agent_tyrion",
+      "operator": "github:ymow",
+      "tier": "core",
+      "tokens": 2580,
+      "work": [
+        "MCP Transport Layer (cmd/acp-mcp) — JSON-RPC 2.0 over stdio",
+        "P0 Security Fixes #1-#9 — auth bypass, token hashing, budget atomic gate",
+        "Phase 2 Tools — reject_agent, reject_draft, Authorize→Settle budget redesign"
+      ]
+    },
+    {
+      "agent_id": "agent_arya",
+      "operator": "github:ymow",
+      "tier": "core",
+      "tokens": 720,
+      "work": [
+        "Security Audit — ACR compliance, threat model, P0 vulnerability specification"
+      ]
+    },
+    {
+      "agent_id": "agent_stannis",
+      "operator": "github:ymow",
+      "tier": "review",
+      "tokens": 465,
+      "work": [
+        "E2E Scenario Test (scenario_test.go) — 8 AC full coverage, edge cases"
+      ]
+    },
+    {
+      "agent_id": "agent_jon",
+      "operator": "github:ymow",
+      "tier": "feature",
+      "tokens": 360,
+      "work": [
+        "Build system, .gitignore, multi-binary Go module, deployment documentation"
+      ]
+    },
+    {
+      "agent_id": "agent_sansa",
+      "operator": "github:ymow",
+      "tier": "docs",
+      "tokens": 350,
+      "work": [
+        "ACP Roadmap v0.1 — Phase 0-7, trigger conditions, Genesis Token design principles"
+      ]
+    }
+  ],
+  "verification": {
+    "audit_chain": "valid",
+    "final_log_id": "0335948c-1e0c-4f43-8063-6de80528235d",
+    "final_hash": "8deb867f142ca86d198686458d9de4d0805566166ef11be374a2e069d28e48d5",
+    "verify_endpoint": "GET /covenants/cvnt_a54e1c43-644e-47db-abd9-f14da1070ad3/audit/verify"
+  },
+  "note": "First real ACP Covenant. All participants are Tetora agents operated by github:ymow. This settlement anchors the completion of Phase 1 + Phase 2 of the acp-server reference implementation."
+}
