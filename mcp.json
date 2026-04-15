@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "acp": {
+      "command": "./acp-mcp",
+      "env": {
+        "ACP_SERVER_URL": "http://localhost:8080",
+        "ACP_SESSION_TOKEN": "${ACP_SESSION_TOKEN}",
+        "ACP_COVENANT_ID": "${ACP_COVENANT_ID}",
+        "ACP_AGENT_ID": "${ACP_AGENT_ID}"
+      }
+    }
+  }
+}
