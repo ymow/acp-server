@@ -1,0 +1,24 @@
+# Binaries
+acp-server
+acp-mcp
+
+# SQLite runtime files
+*.db
+*.db-shm
+*.db-wal
+
+# Go build cache
+/vendor/
+
+# Environment
+.env
+.env.local
+config.local.json
+
+# OS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
