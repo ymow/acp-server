@@ -141,3 +141,27 @@ CREATE TABLE IF NOT EXISTS session_tokens (
     expires_at  TEXT                          -- absolute expiry, NULL = rotate-only
 );
 CREATE INDEX IF NOT EXISTS idx_session_agent ON session_tokens(agent_id, covenant_id, status);
+
+-- ── Token Snapshots (Phase 2 WI5: lock-time snapshot) ─────────────────────
+
+CREATE TABLE IF NOT EXISTS token_snapshots (
+  id           TEXT PRIMARY KEY,
+  covenant_id  TEXT NOT NULL,
+  agent_id     TEXT NOT NULL,
+  agent_tokens INTEGER NOT NULL DEFAULT 0,
+  cost_tokens  INTEGER NOT NULL DEFAULT 0,
+  snapped_at   TEXT NOT NULL,
+  FOREIGN KEY (covenant_id) REFERENCES covenants(covenant_id)
+);
+CREATE INDEX IF NOT EXISTS idx_snapshots_covenant ON token_snapshots(covenant_id, agent_id);
+
+-- ── Budget Reservations (Phase 2 WI6: authorize-then-settle) ──────────────
+
+CREATE TABLE IF NOT EXISTS budget_reservations (
+  id           TEXT PRIMARY KEY,
+  covenant_id  TEXT NOT NULL,
+  audit_log_id TEXT NOT NULL DEFAULT '',
+  amount       REAL NOT NULL,
+  status       TEXT NOT NULL DEFAULT 'reserved',  -- reserved | settled | released
+  created_at   TEXT NOT NULL
+);

@@ -1,10 +1,13 @@
-// Package budget implements ACR-60 MVP: global budget gate with atomic check-and-spend.
+// Package budget implements ACR-60 MVP: global budget gate with authorize-then-settle.
+// Phase 2 WI6 (Option A): CheckAndReserve checks only (no deduction); RecordSpend settles.
 package budget
 
 import (
 	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/inkmesh/acp-server/internal/id"
 )
 
 type State struct {
@@ -30,56 +33,105 @@ func EnsureCounter(db *sql.DB, covenantID string, limit float64) error {
 	return err
 }
 
-// CheckAndReserve atomically checks and reserves budget for a single execution.
-// It uses a single UPDATE statement so two concurrent requests cannot both pass
-// when only one unit of budget remains (no SELECT-then-UPDATE race).
-// SetMaxOpenConns(1) in db.Open ensures SQLite single-writer ordering.
-func CheckAndReserve(db *sql.DB, covenantID string, estimatedCost float64) error {
+// CheckAndReserve checks whether sufficient budget remains for estimatedCost.
+// Phase 2 WI6 (Option A): does NOT deduct from budget_counters; creates a reservation record.
+// Returns (reservationID, error). reservationID is "" when estimatedCost <= 0 or no counter exists.
+func CheckAndReserve(db *sql.DB, covenantID string, estimatedCost float64) (string, error) {
+	if estimatedCost <= 0 {
+		return "", nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+
+	// Check remaining budget
+	var limit, spent float64
+	err = tx.QueryRow(`SELECT budget_limit, budget_spent FROM budget_counters WHERE covenant_id = ?`,
+		covenantID).Scan(&limit, &spent)
+	if err == sql.ErrNoRows {
+		// No counter = unlimited; still create a reservation for audit purposes
+		if err2 := tx.Commit(); err2 != nil {
+			return "", err2
+		}
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if limit > 0 && (limit-spent) < estimatedCost {
+		return "", fmt.Errorf("budget exhausted: remaining=%.8f required=%.8f", limit-spent, estimatedCost)
+	}
+
+	// Create reservation record (audit_log_id filled in later by RecordSpend)
+	reservationID := id.LogID()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err = tx.Exec(`
+		INSERT INTO budget_reservations (id, covenant_id, audit_log_id, amount, status, created_at)
+		VALUES (?, ?, '', ?, 'reserved', ?)`,
+		reservationID, covenantID, estimatedCost, now,
+	)
+	if err != nil {
+		return "", err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	return reservationID, nil
+}
+
+// RecordSpend deducts estimatedCost from budget_counters and settles the reservation.
+// Phase 2 WI6: this is the actual deduction point (replaces CheckAndReserve's old role).
+// auditLogID is stored in the reservation for traceability.
+func RecordSpend(db *sql.DB, covenantID string, estimatedCost float64, reservationID, auditLogID string) error {
 	if estimatedCost <= 0 {
 		return nil
 	}
-
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	result, err := db.Exec(`
-		UPDATE budget_counters
-		SET budget_spent = budget_spent + ?,
-		    updated_at   = ?
-		WHERE covenant_id = ?
-		  AND (budget_limit = 0 OR (budget_limit - budget_spent) >= ?)`,
-		estimatedCost, now, covenantID, estimatedCost,
-	)
-	if err != nil {
-		return err
-	}
-	if n, _ := result.RowsAffected(); n == 1 {
-		return nil // reserved
-	}
-
-	// rows affected == 0: either no counter row (unlimited) or budget exhausted
-	var limit, spent float64
-	err = db.QueryRow(`SELECT budget_limit, budget_spent FROM budget_counters WHERE covenant_id = ?`,
-		covenantID).Scan(&limit, &spent)
-	if err == sql.ErrNoRows {
-		return nil // no counter = unlimited
-	}
-	if err != nil {
-		return err
-	}
-	return fmt.Errorf("budget exhausted: remaining=%.8f required=%.8f", limit-spent, estimatedCost)
-}
-
-// RecordSpend decrements the remaining budget after a successful execution (Step 7).
-func RecordSpend(db *sql.DB, covenantID string, actualCost float64) error {
-	if actualCost <= 0 {
-		return nil
-	}
 	_, err := db.Exec(`
 		UPDATE budget_counters
 		SET budget_spent = budget_spent + ?, updated_at = ?
 		WHERE covenant_id = ?`,
-		actualCost, time.Now().UTC().Format(time.RFC3339Nano), covenantID,
+		estimatedCost, now, covenantID,
+	)
+	if err != nil {
+		return err
+	}
+	// Settle the reservation record if one was created.
+	if reservationID != "" {
+		db.Exec(`
+			UPDATE budget_reservations SET status='settled', audit_log_id=?
+			WHERE id=?`,
+			auditLogID, reservationID,
+		)
+	}
+	return nil
+}
+
+// Release decrements budget_spent by amount (used by reject_draft to refund a settled spend).
+func Release(db *sql.DB, covenantID string, amount float64) error {
+	if amount <= 0 {
+		return nil
+	}
+	_, err := db.Exec(`
+		UPDATE budget_counters
+		SET budget_spent = MAX(0, budget_spent - ?), updated_at = ?
+		WHERE covenant_id = ?`,
+		amount, time.Now().UTC().Format(time.RFC3339Nano), covenantID,
 	)
 	return err
+}
+
+// ReleaseReservation marks a reservation as released when tool execution fails.
+// No change to budget_counters (CheckAndReserve never deducted them).
+func ReleaseReservation(db *sql.DB, reservationID string) {
+	if reservationID == "" {
+		return
+	}
+	db.Exec(`UPDATE budget_reservations SET status='released' WHERE id=?`, reservationID)
 }
 
 // GetState returns the current budget state for a covenant.

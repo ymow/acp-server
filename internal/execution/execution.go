@@ -68,8 +68,8 @@ type Tool interface {
 
 // Engine runs the eight-step ACP execution flow.
 type Engine struct {
-	db      *sql.DB
-	cov     *covenant.Service
+	db  *sql.DB
+	cov *covenant.Service
 }
 
 func New(db *sql.DB, covSvc *covenant.Service) *Engine {
@@ -99,9 +99,10 @@ func (e *Engine) Run(covenantID, agentID, sessionID string, tool Tool, params ma
 		return nil, fmt.Errorf("step2: %w", err)
 	}
 
-	// ── Step 2.5: Budget gate ──────────────────────────────────────────────
+	// ── Step 2.5: Budget gate (WI6: check-only, create reservation) ───────
 	estimated := tool.EstimateCost(ctx, params)
-	if err := budget.CheckAndReserve(e.db, covenantID, estimated); err != nil {
+	reservationID, err := budget.CheckAndReserve(e.db, covenantID, estimated)
+	if err != nil {
 		e.logRejection(covenantID, agentID, sessionID, tool, params, cov.State, err.Error())
 		return nil, fmt.Errorf("step2.5: %w", err)
 	}
@@ -109,6 +110,7 @@ func (e *Engine) Run(covenantID, agentID, sessionID string, tool Tool, params ma
 	// ── Step 3: Execute core logic ─────────────────────────────────────────
 	result, err := tool.ExecuteLogic(ctx, params)
 	if err != nil {
+		budget.ReleaseReservation(e.db, reservationID)
 		e.logRejection(covenantID, agentID, sessionID, tool, params, cov.State, err.Error())
 		return nil, fmt.Errorf("step3: %w", err)
 	}
@@ -137,16 +139,18 @@ func (e *Engine) Run(covenantID, agentID, sessionID string, tool Tool, params ma
 		StateAfter:    effects.StateAfter,
 	})
 	if err != nil {
+		budget.ReleaseReservation(e.db, reservationID)
 		return nil, fmt.Errorf("step5: audit log: %w", err)
 	}
 
 	// ── Step 6: Apply side effects ─────────────────────────────────────────
 	if err := tool.ApplySideEffects(ctx, logEntry, effects, result, params); err != nil {
+		budget.ReleaseReservation(e.db, reservationID)
 		return nil, fmt.Errorf("step6: %w", err)
 	}
 
-	// ── Step 7: Update budget counter ─────────────────────────────────────
-	if err := budget.RecordSpend(e.db, covenantID, effects.CostDelta); err != nil {
+	// ── Step 7: Settle budget (WI6: actual deduction happens here) ────────
+	if err := budget.RecordSpend(e.db, covenantID, estimated, reservationID, logEntry.LogID); err != nil {
 		return nil, fmt.Errorf("step7: budget update: %w", err)
 	}
 
