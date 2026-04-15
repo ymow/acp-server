@@ -88,7 +88,7 @@ func (e *Engine) Run(covenantID, agentID, sessionID string, tool Tool, params ma
 		return nil, fmt.Errorf("step1: agent not in covenant: %w", err)
 	}
 	if mem.Status != "active" {
-		return nil, fmt.Errorf("step1: agent status %q does not permit execution", mem.Status)
+		return nil, fmt.Errorf("step1.forbidden: agent status %q does not permit execution", mem.Status)
 	}
 
 	ctx := &Context{Covenant: cov, Member: mem, DB: e.db, CovenantSvc: e.cov}

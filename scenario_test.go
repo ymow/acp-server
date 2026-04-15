@@ -191,12 +191,16 @@ func TestE2EScenario(t *testing.T) {
 	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 	t.Run("邊界案例_預算超額", func(t *testing.T) {
 		// 建立獨立測試用 Covenant，預算設為 25（propose_passage 每次消耗 10）
-		budgetCov, _, err := covSvc.Create("預算測試專案", "book", "pid_budget_owner")
+		budgetCov, budgetOwner, err := covSvc.Create("預算測試專案", "book", "pid_budget_owner")
 		mustOK(t, err, "建立預算測試 Covenant")
 		mustOK(t, covSvc.AddTier(budgetCov.CovenantID, "tier1", "T1", 1.0, nil), "新增層級")
 		budgetCov, _ = covSvc.Transition(budgetCov.CovenantID, "OPEN")
 		agent, _ := covSvc.Join(budgetCov.CovenantID, "pid_budget_agent", "tier1")
 		budgetCov, _ = covSvc.Transition(budgetCov.CovenantID, "ACTIVE")
+		// WI-1: approve agent before it can execute tools.
+		_, err = engine.Run(budgetCov.CovenantID, budgetOwner.AgentID, "sess_budget_owner",
+			&tools.ApproveAgent{}, map[string]any{"agent_id": agent.AgentID})
+		mustOK(t, err, "approve budget agent")
 
 		// 預算設為 25，每次 propose 消耗 10
 		mustOK(t, budget.EnsureCounter(conn, budgetCov.CovenantID, 25.0), "設定預算 $25")

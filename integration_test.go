@@ -112,6 +112,17 @@ func TestMVPIntegration(t *testing.T) {
 	}, &tokB)
 	t.Logf("  Agent B token issued (len=%d)", len(tokB.Token))
 
+	// ── Step 5b: Owner approves Agent A and Agent B (WI-1: join is now pending) ──
+	t.Log("\n▶ Step 5b: Owner approves Agent A and Agent B")
+	var apprAgentA struct{ Receipt map[string]any `json:"receipt"` }
+	c.tool(covenantID, ownerAgentID, tokOwner.Token, "approve_agent",
+		map[string]any{"agent_id": agentA}, &apprAgentA)
+	t.Logf("  Agent A approved → status=%v", apprAgentA.Receipt["extra"])
+	var apprAgentB struct{ Receipt map[string]any `json:"receipt"` }
+	c.tool(covenantID, ownerAgentID, tokOwner.Token, "approve_agent",
+		map[string]any{"agent_id": agentB}, &apprAgentB)
+	t.Logf("  Agent B approved → status=%v", apprAgentB.Receipt["extra"])
+
 	// ── Step 6: Agent A proposes 1000-word passage ─────────────────────────
 	t.Log("\n▶ Step 6: Agent A proposes passage (1000 words)")
 	var propA struct{ Receipt map[string]any `json:"receipt"` }

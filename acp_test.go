@@ -74,6 +74,14 @@ func TestMVPAcceptanceCriteria(t *testing.T) {
 		}
 		t.Logf("✓ AC-2  agent1=%s agent2=%s", agent1.AgentID, agent2.AgentID)
 
+		// WI-1: agents join as 'pending'; owner must approve them before they can act.
+		_, err = engine.Run(cov.CovenantID, ownerMem.AgentID, "sess_owner",
+			&tools.ApproveAgent{}, map[string]any{"agent_id": agent1.AgentID})
+		must(t, err, "approve agent1")
+		_, err = engine.Run(cov.CovenantID, ownerMem.AgentID, "sess_owner",
+			&tools.ApproveAgent{}, map[string]any{"agent_id": agent2.AgentID})
+		must(t, err, "approve agent2")
+
 		// Budget: set a generous limit so budget gate is exercised
 		must(t, budget.EnsureCounter(conn, cov.CovenantID, 1000.0), "budget counter")
 
@@ -234,7 +242,7 @@ func TestBudgetExhaustion(t *testing.T) {
 	covSvc := covenant.New(conn)
 	engine := execution.New(conn, covSvc)
 
-	cov, _, err := covSvc.Create("Budget Exhaustion Test", "book", "pid_bex_owner")
+	cov, ownerMem, err := covSvc.Create("Budget Exhaustion Test", "book", "pid_bex_owner")
 	must(t, err, "create")
 	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil), "add tier")
 	cov, err = covSvc.Transition(cov.CovenantID, "OPEN")
@@ -243,6 +251,10 @@ func TestBudgetExhaustion(t *testing.T) {
 	must(t, err, "join agent")
 	cov, err = covSvc.Transition(cov.CovenantID, "ACTIVE")
 	must(t, err, "→ACTIVE")
+	// WI-1: approve agent before it can execute tools.
+	_, err = engine.Run(cov.CovenantID, ownerMem.AgentID, "sess_owner",
+		&tools.ApproveAgent{}, map[string]any{"agent_id": agent.AgentID})
+	must(t, err, "approve bex agent")
 
 	// Budget = 50; propose_passage costs 10 → 5 calls consume exactly 50.
 	must(t, budget.EnsureCounter(conn, cov.CovenantID, 50.0), "budget counter")

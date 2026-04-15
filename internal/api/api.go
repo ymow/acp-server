@@ -67,6 +67,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /tools/approve_agent", s.toolHandler(&tools.ApproveAgent{}))
 	s.mux.HandleFunc("POST /tools/confirm_settlement_output", s.toolHandler(&tools.ConfirmSettlementOutput{}))
 
+	// ── Phase 2 admin tools (X-Owner-Token auth) ─────────────────────────────
+	s.mux.HandleFunc("POST /tools/reject_agent", s.ownerToolHandler(&tools.RejectAgent{}))
+	s.mux.HandleFunc("POST /tools/reject_draft", s.ownerToolHandler(&tools.RejectDraft{}))
+
+	// ── Phase 2 query tools ───────────────────────────────────────────────────
+	s.mux.HandleFunc("POST /tools/get_token_balance", s.handleGetTokenBalance)
+	s.mux.HandleFunc("POST /tools/list_members", s.handleListMembers)
+
 	// ── Audit & verification ─────────────────────────────────────────────────
 	s.mux.HandleFunc("GET /covenants/{covenant_id}/audit/verify", s.handleVerifyChain)
 	s.mux.HandleFunc("GET /covenants/{covenant_id}/audit", s.handleGetAuditLog)
@@ -284,7 +292,9 @@ func (s *Server) toolHandler(tool execution.Tool) http.HandlerFunc {
 			// Distinguish auth/validation errors (4xx) from internal errors (5xx)
 			status := http.StatusInternalServerError
 			msg := err.Error()
-			if strings.HasPrefix(msg, "step1:") || strings.HasPrefix(msg, "step2:") ||
+			if strings.HasPrefix(msg, "step1.forbidden:") {
+				status = http.StatusForbidden
+			} else if strings.HasPrefix(msg, "step1:") || strings.HasPrefix(msg, "step2:") ||
 				strings.HasPrefix(msg, "step2.5:") || strings.HasPrefix(msg, "step3:") {
 				status = http.StatusBadRequest
 			}
@@ -293,6 +303,186 @@ func (s *Server) toolHandler(tool execution.Tool) http.HandlerFunc {
 		}
 		jsonOK(w, map[string]any{"receipt": receipt})
 	}
+}
+
+// ownerToolHandler wraps admin tools that authenticate via X-Owner-Token instead of X-Session-Token.
+// It finds the covenant owner's agentID and runs the tool through the execution engine.
+func (s *Server) ownerToolHandler(tool execution.Tool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		covenantID := r.Header.Get("X-Covenant-ID")
+		if covenantID == "" {
+			jsonError(w, "X-Covenant-ID header required", http.StatusBadRequest)
+			return
+		}
+		ownerToken := r.Header.Get("X-Owner-Token")
+		if ownerToken == "" {
+			jsonError(w, "X-Owner-Token header required", http.StatusUnauthorized)
+			return
+		}
+		if err := s.validateOwnerToken(r, covenantID); err != nil {
+			jsonError(w, err.Error(), http.StatusUnauthorized)
+			return
+		}
+		agentID, err := s.covSvc.GetOwnerAgentID(covenantID)
+		if err != nil {
+			jsonError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		var body struct {
+			Params map[string]any `json:"params"`
+		}
+		if !decode(w, r, &body) {
+			return
+		}
+		if body.Params == nil {
+			body.Params = map[string]any{}
+		}
+
+		receipt, err := s.engine.Run(covenantID, agentID, sha256Hex(ownerToken), tool, body.Params)
+		if err != nil {
+			status := http.StatusInternalServerError
+			msg := err.Error()
+			if strings.HasPrefix(msg, "step1.forbidden:") {
+				status = http.StatusForbidden
+			} else if strings.HasPrefix(msg, "step1:") || strings.HasPrefix(msg, "step2:") ||
+				strings.HasPrefix(msg, "step2.5:") || strings.HasPrefix(msg, "step3:") {
+				status = http.StatusBadRequest
+			}
+			jsonError(w, msg, status)
+			return
+		}
+		jsonOK(w, map[string]any{"receipt": receipt})
+	}
+}
+
+// handleGetTokenBalance returns confirmed/pending/rejected token totals for an agent.
+// Requires valid X-Session-Token.
+func (s *Server) handleGetTokenBalance(w http.ResponseWriter, r *http.Request) {
+	sessionToken := r.Header.Get("X-Session-Token")
+	if sessionToken == "" {
+		jsonError(w, "X-Session-Token header required", http.StatusUnauthorized)
+		return
+	}
+
+	var body struct {
+		Params struct {
+			CovenantID string `json:"covenant_id"`
+			AgentID    string `json:"agent_id"`
+		} `json:"params"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	covenantID := body.Params.CovenantID
+	agentID := body.Params.AgentID
+	if covenantID == "" || agentID == "" {
+		jsonError(w, "covenant_id and agent_id are required", http.StatusBadRequest)
+		return
+	}
+
+	valid, _ := sessions.Validate(s.db, sessionToken, agentID, covenantID)
+	if !valid {
+		jsonError(w, "invalid or expired session token", http.StatusUnauthorized)
+		return
+	}
+
+	type balRow struct {
+		status string
+		total  int
+	}
+	rows, err := s.db.Query(`
+		SELECT status, COALESCE(SUM(delta), 0)
+		FROM token_ledger
+		WHERE covenant_id=? AND agent_id=?
+		GROUP BY status`,
+		covenantID, agentID,
+	)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var confirmed, pending, rejected int
+	for rows.Next() {
+		var st string
+		var total int
+		if err := rows.Scan(&st, &total); err != nil {
+			continue
+		}
+		switch st {
+		case "confirmed":
+			confirmed = total
+		case "pending":
+			pending = total
+		case "rejected":
+			rejected = total
+		}
+	}
+	jsonOK(w, map[string]any{
+		"confirmed_tokens": confirmed,
+		"pending_tokens":   pending,
+		"rejected_tokens":  rejected,
+	})
+}
+
+// handleListMembers returns all covenant members with their token totals.
+// Requires valid X-Owner-Token.
+func (s *Server) handleListMembers(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Params struct {
+			CovenantID string `json:"covenant_id"`
+		} `json:"params"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	covenantID := body.Params.CovenantID
+	if covenantID == "" {
+		jsonError(w, "covenant_id is required", http.StatusBadRequest)
+		return
+	}
+	if err := s.validateOwnerToken(r, covenantID); err != nil {
+		jsonError(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	rows, err := s.db.Query(`
+		SELECT m.agent_id, m.status, COALESCE(m.tier_id,''), m.joined_at,
+		       COALESCE(SUM(CASE WHEN l.status='confirmed' THEN l.delta ELSE 0 END), 0)
+		FROM covenant_members m
+		LEFT JOIN token_ledger l ON l.covenant_id=m.covenant_id AND l.agent_id=m.agent_id
+		WHERE m.covenant_id=?
+		GROUP BY m.agent_id, m.status, m.tier_id, m.joined_at`,
+		covenantID,
+	)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	type memberRow struct {
+		AgentID         string `json:"agent_id"`
+		Status          string `json:"status"`
+		TierID          string `json:"tier_id,omitempty"`
+		JoinedAt        string `json:"joined_at"`
+		ConfirmedTokens int    `json:"confirmed_tokens"`
+	}
+	var members []memberRow
+	for rows.Next() {
+		var m memberRow
+		if err := rows.Scan(&m.AgentID, &m.Status, &m.TierID, &m.JoinedAt, &m.ConfirmedTokens); err != nil {
+			jsonError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		members = append(members, m)
+	}
+	if members == nil {
+		members = []memberRow{}
+	}
+	jsonOK(w, map[string]any{"members": members})
 }
 
 // ── Audit handlers ───────────────────────────────────────────────────────────

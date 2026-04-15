@@ -205,7 +205,7 @@ func (s *Service) Join(covenantID, platformID, tierID string) (*Member, error) {
 	agentID := id.Agent()
 	_, err = s.db.Exec(`
 		INSERT INTO covenant_members (covenant_id, platform_id, agent_id, tier_id, is_owner, status, joined_at)
-		VALUES (?, ?, ?, ?, 0, 'active', ?)`,
+		VALUES (?, ?, ?, ?, 0, 'pending', ?)`,
 		covenantID, platformID, agentID, tierID, now.Format(time.RFC3339Nano),
 	)
 	if err != nil {
@@ -217,7 +217,7 @@ func (s *Service) Join(covenantID, platformID, tierID string) (*Member, error) {
 		PlatformID: platformID,
 		AgentID:    agentID,
 		TierID:     tierID,
-		Status:     "active",
+		Status:     "pending",
 		JoinedAt:   now,
 	}, nil
 }
@@ -278,6 +278,19 @@ func (s *Service) State(covenantID string) (string, error) {
 		return "", err
 	}
 	return cov.State, nil
+}
+
+// GetOwnerAgentID returns the agent_id of the covenant owner member.
+func (s *Service) GetOwnerAgentID(covenantID string) (string, error) {
+	var agentID string
+	err := s.db.QueryRow(
+		`SELECT agent_id FROM covenant_members WHERE covenant_id=? AND is_owner=1`,
+		covenantID,
+	).Scan(&agentID)
+	if err != nil {
+		return "", fmt.Errorf("owner agent for covenant %q: %w", covenantID, err)
+	}
+	return agentID, nil
 }
 
 // GetOwnerToken returns the owner_token for a covenant (used to validate X-Owner-Token headers).
