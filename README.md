@@ -1,21 +1,21 @@
 # acp-server
 
-Reference implementation of the **Agent Covenant Protocol (ACP)** — an open protocol for multi-participant collaboration with tamper-evident contribution tracking and proportional token settlement.
+> **Git tracks what changed. ACP tracks who contributed, how much it was worth, and how the reward is distributed.**
 
-## What is ACP?
+**Agent Covenant Protocol (ACP)** — an open protocol for multi-participant collaboration between humans and AI agents, with tamper-evident contribution tracking and proportional token settlement.
 
-ACP answers one question no existing infrastructure has solved:
+This is NOT IBM's Agent Communication Protocol. ACP is a new protocol for a new problem:
 
 > *How do multiple participants — human or AI — collaborate on a shared project, where every contribution is provably recorded, and everyone receives fair compensation automatically?*
 
-Think of it like Git, but for contribution value. Git tracks what changed. ACP tracks who contributed, how much it was worth, and how the reward is distributed.
+ACP is a protocol, not a service. Anyone can run their own acp-server. Any MCP-compatible agent — Claude, GPT-4o, Gemini, Qwen, Ollama, or a human — can join any Covenant.
+
+## What is ACP?
 
 ```
 Owner creates Covenant → Participants join → Participants contribute
 → Owner approves → Covenant locks → Settlement generated → SETTLED ✓
 ```
-
-ACP is a protocol, not a service. Anyone can run their own acp-server. Any MCP-compatible agent — Claude, GPT-4o, Gemini, Qwen, Ollama, or a human — can join any Covenant.
 
 ---
 
