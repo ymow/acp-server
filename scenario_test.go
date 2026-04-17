@@ -123,7 +123,7 @@ func TestE2EScenario(t *testing.T) {
 	// 步驟 6：Agent A 提交貢獻（業務語義：投稿 1000 字章節）
 	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 	receiptA1, err := engine.Run(cov.CovenantID, agentA.AgentID, "sess_a",
-		&tools.ProposePassage{}, map[string]any{"word_count": 1000})
+		&tools.ProposePassage{}, map[string]any{"unit_count": 1000})
 	mustOK(t, err, "Agent A 提交稿件")
 	if receiptA1.Status != "pending" {
 		t.Fatalf("預期 pending 狀態，實際為 %s", receiptA1.Status)
@@ -137,7 +137,7 @@ func TestE2EScenario(t *testing.T) {
 	approveA, err := engine.Run(cov.CovenantID, ownerMem.AgentID, "sess_owner",
 		&tools.ApproveDraft{}, map[string]any{
 			"draft_id":         draftA,
-			"word_count":       1000,
+			"unit_count":       1000,
 			"acceptance_ratio": 1.0, // 100% 採納
 		})
 	mustOK(t, err, "Owner 批准 Agent A")
@@ -147,7 +147,7 @@ func TestE2EScenario(t *testing.T) {
 	// 步驟 8：Agent B 提交貢獻（業務語義：投稿 800 字，資深作者有 1.5x 加成）
 	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 	receiptB1, err := engine.Run(cov.CovenantID, agentB.AgentID, "sess_b",
-		&tools.ProposePassage{}, map[string]any{"word_count": 800})
+		&tools.ProposePassage{}, map[string]any{"unit_count": 800})
 	mustOK(t, err, "Agent B 提交稿件")
 	t.Logf("【稿件提交】 Agent B 提交 800 字 → 狀態: %s", receiptB1.Status)
 
@@ -156,7 +156,7 @@ func TestE2EScenario(t *testing.T) {
 	approveB, err := engine.Run(cov.CovenantID, ownerMem.AgentID, "sess_owner",
 		&tools.ApproveDraft{}, map[string]any{
 			"draft_id":         draftB,
-			"word_count":       800,
+			"unit_count":       800,
 			"acceptance_ratio": 0.8, // 80% 採納
 		})
 	mustOK(t, err, "Owner 批准 Agent B")
@@ -208,13 +208,13 @@ func TestE2EScenario(t *testing.T) {
 		// 第 1、2 次應成功（累計 20）
 		for i := 1; i <= 2; i++ {
 			_, err := engine.Run(budgetCov.CovenantID, agent.AgentID, "sess_budget",
-				&tools.ProposePassage{}, map[string]any{"word_count": 100})
+				&tools.ProposePassage{}, map[string]any{"unit_count": 100})
 			mustOK(t, err, "第 %d 次提交", i)
 		}
 
 		// 第 3 次應被拒絕（累計 30 > 25）
 		_, err = engine.Run(budgetCov.CovenantID, agent.AgentID, "sess_budget",
-			&tools.ProposePassage{}, map[string]any{"word_count": 100})
+			&tools.ProposePassage{}, map[string]any{"unit_count": 100})
 		if err == nil {
 			t.Error("預算超額應被拒絕，但實際成功了")
 		} else if !strings.Contains(err.Error(), "budget exhausted") {

@@ -127,7 +127,7 @@ func TestMVPIntegration(t *testing.T) {
 	t.Log("\n▶ Step 6: Agent A proposes passage (1000 words)")
 	var propA struct{ Receipt map[string]any `json:"receipt"` }
 	c.tool(covenantID, agentA, tokA.Token, "propose_passage",
-		map[string]any{"word_count": 1000}, &propA)
+		map[string]any{"unit_count": 1000}, &propA)
 	t.Logf("  receipt_id = %s", propA.Receipt["receipt_id"])
 	t.Logf("  status     = %s  (pending = tokens await approval)", propA.Receipt["status"])
 	t.Logf("  log_hash   = %s…", propA.Receipt["log_hash"].(string)[:16])
@@ -138,7 +138,7 @@ func TestMVPIntegration(t *testing.T) {
 	var apprA struct{ Receipt map[string]any `json:"receipt"` }
 	c.tool(covenantID, ownerAgentID, tokOwner.Token, "approve_draft", map[string]any{
 		"draft_id":         draftA,
-		"word_count":       1000,
+		"unit_count":       1000,
 		"acceptance_ratio": 1.0,
 	}, &apprA)
 	t.Logf("  tokens_awarded = %.0f", apprA.Receipt["tokens_awarded"])
@@ -148,7 +148,7 @@ func TestMVPIntegration(t *testing.T) {
 	t.Log("\n▶ Step 8: Agent B proposes passage (500 words)")
 	var propB struct{ Receipt map[string]any `json:"receipt"` }
 	c.tool(covenantID, agentB, tokB.Token, "propose_passage",
-		map[string]any{"word_count": 500}, &propB)
+		map[string]any{"unit_count": 500}, &propB)
 	t.Logf("  status = %s", propB.Receipt["status"])
 
 	// ── Step 9: Owner approves Agent B's draft ─────────────────────────────
@@ -157,7 +157,7 @@ func TestMVPIntegration(t *testing.T) {
 	var apprB struct{ Receipt map[string]any `json:"receipt"` }
 	c.tool(covenantID, ownerAgentID, tokOwner.Token, "approve_draft", map[string]any{
 		"draft_id":         draftB,
-		"word_count":       500,
+		"unit_count":       500,
 		"acceptance_ratio": 0.8,
 	}, &apprB)
 	t.Logf("  tokens_awarded = %.0f  (500 × 0.8 = 400)", apprB.Receipt["tokens_awarded"])
@@ -186,12 +186,12 @@ func TestMVPIntegration(t *testing.T) {
 	// Old token still works (grace)
 	var graceCheck struct{ Receipt map[string]any `json:"receipt"` }
 	statusCode := c.toolWithStatus(covenantID, agentA, tokA.Token, "propose_passage",
-		map[string]any{"word_count": 100}, &graceCheck)
+		map[string]any{"unit_count": 100}, &graceCheck)
 	t.Logf("  Old token during grace: HTTP %d (200 = still valid)", statusCode)
 
 	// New token works too
 	c.tool(covenantID, agentA, newTokA, "propose_passage",
-		map[string]any{"word_count": 100}, &graceCheck)
+		map[string]any{"unit_count": 100}, &graceCheck)
 	t.Logf("  New token: HTTP 200 ✓")
 
 	// ── Step 12: Lock + Settle ─────────────────────────────────────────────

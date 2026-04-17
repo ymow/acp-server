@@ -87,7 +87,7 @@ func TestMVPAcceptanceCriteria(t *testing.T) {
 
 		// AC-3: Agent A proposes + gets approved → tokens calculated
 		r1, err := engine.Run(cov.CovenantID, agent1.AgentID, "sess_a",
-			&tools.ProposePassage{}, map[string]any{"word_count": 1000})
+			&tools.ProposePassage{}, map[string]any{"unit_count": 1000})
 		must(t, err, "propose agent1")
 		if r1.Status != "pending" {
 			t.Errorf("AC-3: want pending, got %s", r1.Status)
@@ -98,7 +98,7 @@ func TestMVPAcceptanceCriteria(t *testing.T) {
 		r1a, err := engine.Run(cov.CovenantID, ownerMem.AgentID, "sess_owner",
 			&tools.ApproveDraft{}, map[string]any{
 				"draft_id":         draftID,
-				"word_count":       1000,
+				"unit_count":       1000,
 				"acceptance_ratio": 1.0,
 			})
 		must(t, err, "approve agent1")
@@ -109,14 +109,14 @@ func TestMVPAcceptanceCriteria(t *testing.T) {
 
 		// AC-4: Agent B proposes + approved
 		_, err = engine.Run(cov.CovenantID, agent2.AgentID, "sess_b",
-			&tools.ProposePassage{}, map[string]any{"word_count": 500})
+			&tools.ProposePassage{}, map[string]any{"unit_count": 500})
 		must(t, err, "propose agent2")
 
 		draftID2 := getDraftID(t, conn, cov.CovenantID, agent2.AgentID)
 		r2a, err := engine.Run(cov.CovenantID, ownerMem.AgentID, "sess_owner",
 			&tools.ApproveDraft{}, map[string]any{
 				"draft_id":         draftID2,
-				"word_count":       500,
+				"unit_count":       500,
 				"acceptance_ratio": 1.0,
 			})
 		must(t, err, "approve agent2")
@@ -261,7 +261,7 @@ func TestBudgetExhaustion(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		_, err := engine.Run(cov.CovenantID, agent.AgentID, "sess_bex",
-			&tools.ProposePassage{}, map[string]any{"word_count": 100})
+			&tools.ProposePassage{}, map[string]any{"unit_count": 100})
 		if err != nil {
 			t.Fatalf("call %d should succeed: %v", i+1, err)
 		}
@@ -269,7 +269,7 @@ func TestBudgetExhaustion(t *testing.T) {
 
 	// 6th call must be rejected.
 	_, err = engine.Run(cov.CovenantID, agent.AgentID, "sess_bex",
-		&tools.ProposePassage{}, map[string]any{"word_count": 100})
+		&tools.ProposePassage{}, map[string]any{"unit_count": 100})
 	if err == nil {
 		t.Fatal("AC-5: 6th call should be rejected due to budget exhaustion")
 	}
@@ -313,7 +313,7 @@ func TestCostAndNetDeltaAccounting(t *testing.T) {
 
 	// Propose: EstimateCost = 10, TokensDelta = 0 → expected cost_delta=10, net_delta=-10.
 	rp, err := engine.Run(cov.CovenantID, agent.AgentID, "sess_nd",
-		&tools.ProposePassage{}, map[string]any{"word_count": 1000})
+		&tools.ProposePassage{}, map[string]any{"unit_count": 1000})
 	must(t, err, "propose")
 	if rp.CostDelta != 10 {
 		t.Errorf("propose cost_delta: want 10, got %v", rp.CostDelta)
@@ -327,7 +327,7 @@ func TestCostAndNetDeltaAccounting(t *testing.T) {
 	ra, err := engine.Run(cov.CovenantID, owner.AgentID, "sess_owner",
 		&tools.ApproveDraft{}, map[string]any{
 			"draft_id":         draftID,
-			"word_count":       1000,
+			"unit_count":       1000,
 			"acceptance_ratio": 1.0,
 		})
 	must(t, err, "approve")
@@ -438,13 +438,13 @@ func TestRejectDraftRefundsBudget(t *testing.T) {
 	must(t, budget.EnsureCounter(conn, cov.CovenantID, 1000.0), "budget")
 
 	_, err = engine.Run(cov.CovenantID, agent.AgentID, "sess_r",
-		&tools.ProposePassage{}, map[string]any{"word_count": 1000})
+		&tools.ProposePassage{}, map[string]any{"unit_count": 1000})
 	must(t, err, "propose")
 	draftID := getDraftID(t, conn, cov.CovenantID, agent.AgentID)
 	approveReceipt, err := engine.Run(cov.CovenantID, owner.AgentID, "sess_owner",
 		&tools.ApproveDraft{}, map[string]any{
 			"draft_id":         draftID,
-			"word_count":       1000,
+			"unit_count":       1000,
 			"acceptance_ratio": 1.0,
 		})
 	must(t, err, "approve")
@@ -503,14 +503,14 @@ func TestCostWeightApplied(t *testing.T) {
 	must(t, budget.EnsureCounter(conn, cov.CovenantID, 1000.0), "budget")
 
 	_, err = engine.Run(cov.CovenantID, agent.AgentID, "sess_w",
-		&tools.ProposePassage{}, map[string]any{"word_count": 500})
+		&tools.ProposePassage{}, map[string]any{"unit_count": 500})
 	must(t, err, "propose")
 
 	draftID := getDraftID(t, conn, cov.CovenantID, agent.AgentID)
 	ra, err := engine.Run(cov.CovenantID, owner.AgentID, "sess_owner",
 		&tools.ApproveDraft{}, map[string]any{
 			"draft_id":         draftID,
-			"word_count":       500,
+			"unit_count":       500,
 			"acceptance_ratio": 1.0,
 		})
 	must(t, err, "approve")
@@ -556,13 +556,13 @@ func TestRebuildFromAuditLog(t *testing.T) {
 	// Run propose (10) + approve (5), then reject_draft (refunds 5).
 	// Net durable spend = 10.
 	_, err = engine.Run(cov.CovenantID, agent.AgentID, "sess_rb",
-		&tools.ProposePassage{}, map[string]any{"word_count": 1000})
+		&tools.ProposePassage{}, map[string]any{"unit_count": 1000})
 	must(t, err, "propose")
 	draftID := getDraftID(t, conn, cov.CovenantID, agent.AgentID)
 	approveReceipt, err := engine.Run(cov.CovenantID, owner.AgentID, "sess_owner",
 		&tools.ApproveDraft{}, map[string]any{
 			"draft_id":         draftID,
-			"word_count":       1000,
+			"unit_count":       1000,
 			"acceptance_ratio": 1.0,
 		})
 	must(t, err, "approve")

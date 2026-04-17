@@ -282,11 +282,10 @@ Body:    {"params": {...}}
 
 See [ACP_Roadmap.md](https://github.com/ymow/acp-server) for the full Phase 0–7 plan.
 
-**Next: Phase 3**
-- ACR-400 Git Covenant Twin — git push/merge auto-triggers ACP interfaces
-- Layer 2 Git Anchor — settlement hash in repo as permanent proof
-- `unit_count` replacing `word_count` (space_type-aware)
-- Constitutional Principles — formalized participant rights
+**Next: Phase 3** (split into 3.0 housekeeping → 3.B lifecycle → 3.A Git Twin)
+- `unit_count` field landed — `propose_passage` / `approve_draft` now take `unit_count` instead of `word_count`, so `code` / `music` / `research` space types can plug in without an interface change
+- Coming: multi-currency budget validation, `owner_id` vs `agent_id` split, `ACP_Constitution.md` draft
+- Flagship: ACR-400 Git Covenant Twin — `cmd/acp-git-bridge` auto-triggers ACP from git push/merge; Layer 2 settlement hash anchored in repo
 
 ---
 

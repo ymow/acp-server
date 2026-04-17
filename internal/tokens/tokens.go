@@ -10,11 +10,13 @@ import (
 	"github.com/inkmesh/acp-server/internal/id"
 )
 
-const baseTokensPerWord = 1 // 1 token per word, MVP baseline
+const baseTokensPerUnit = 1 // 1 token per unit (word/line/bar per space_type), MVP baseline
 
-// Calculate derives confirmed token count from word count, tier multiplier, and acceptance ratio.
-func Calculate(wordCount int, tierMultiplier, acceptanceRatio float64) int {
-	raw := float64(wordCount) * tierMultiplier * acceptanceRatio
+// Calculate derives confirmed token count from unit_count (space_type-aware:
+// words for book, lines for code, bars for music, etc.), tier multiplier,
+// and acceptance ratio.
+func Calculate(unitCount int, tierMultiplier, acceptanceRatio float64) int {
+	raw := float64(unitCount) * tierMultiplier * acceptanceRatio
 	return int(math.Round(raw))
 }
 

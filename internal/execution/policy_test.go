@@ -9,10 +9,10 @@ import (
 
 func TestApplyParamsPolicy_Whitelist(t *testing.T) {
 	got := ApplyParamsPolicy(
-		map[string]any{"word_count": 120, "chapter": "Ch1", "draft": "top secret"},
-		ParamsPolicy{PreviewFields: []string{"word_count", "chapter"}},
+		map[string]any{"unit_count": 120, "chapter": "Ch1", "draft": "top secret"},
+		ParamsPolicy{PreviewFields: []string{"unit_count", "chapter"}},
 	)
-	want := map[string]any{"word_count": 120, "chapter": "Ch1"}
+	want := map[string]any{"unit_count": 120, "chapter": "Ch1"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("whitelist drop failed: got %v want %v", got, want)
 	}

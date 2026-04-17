@@ -18,7 +18,7 @@ func (t *ApproveDraft) ToolType() string { return "clause" }
 // verification. Whitelist only the bookkeeping fields; drop anything else.
 func (t *ApproveDraft) ParamsPolicy() execution.ParamsPolicy {
 	return execution.ParamsPolicy{
-		PreviewFields: []string{"log_id", "draft_id", "word_count", "acceptance_ratio"},
+		PreviewFields: []string{"log_id", "draft_id", "unit_count", "acceptance_ratio"},
 	}
 }
 
@@ -42,13 +42,13 @@ func (t *ApproveDraft) EstimateCost(_ *execution.Context, _ map[string]any) int6
 func (t *ApproveDraft) ExecuteLogic(ctx *execution.Context, params map[string]any) (map[string]any, error) {
 	logID, _ := params["log_id"].(string)
 	draftID, _ := params["draft_id"].(string)
-	wc, _ := intParam(params, "word_count")
+	uc, _ := intParam(params, "unit_count")
 	ratio, _ := floatParam(params, "acceptance_ratio")
 	if ratio == 0 {
 		ratio = 1.0
 	}
-	if wc <= 0 {
-		return nil, fmt.Errorf("word_count must be > 0 for approval")
+	if uc <= 0 {
+		return nil, fmt.Errorf("unit_count must be > 0 for approval")
 	}
 
 	// log_id path: look up proposer from audit_logs, then find their pending draft.
@@ -79,7 +79,7 @@ func (t *ApproveDraft) ExecuteLogic(ctx *execution.Context, params map[string]an
 		"draft_id":          draftID,
 		"log_id":            logID,
 		"proposer_agent_id": proposerAgentID,
-		"word_count":        wc,
+		"unit_count":        uc,
 		"acceptance_ratio":  ratio,
 		"detail":            fmt.Sprintf("Draft %s approved at %.0f%%", draftID, ratio*100),
 		"is_final":          true,
@@ -87,7 +87,7 @@ func (t *ApproveDraft) ExecuteLogic(ctx *execution.Context, params map[string]an
 }
 
 func (t *ApproveDraft) CalculateSideEffects(ctx *execution.Context, result map[string]any, _ map[string]any) execution.SideEffects {
-	wc, _ := result["word_count"].(int)
+	uc, _ := result["unit_count"].(int)
 	ratio, _ := result["acceptance_ratio"].(float64)
 	proposerAgentID, _ := result["proposer_agent_id"].(string)
 
@@ -101,7 +101,7 @@ func (t *ApproveDraft) CalculateSideEffects(ctx *execution.Context, result map[s
 			ctx.Covenant.CovenantID, tierID).Scan(&multiplier)
 	}
 
-	delta := tokens.Calculate(wc, multiplier, ratio)
+	delta := tokens.Calculate(uc, multiplier, ratio)
 	return execution.SideEffects{
 		TokensDelta: delta,
 		StateAfter:  ctx.Covenant.State,
