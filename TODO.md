@@ -34,19 +34,25 @@ tickets or fixed.
 ### cost_delta values are placeholder constants, not real external spend
 - **Spec:** `ACR-300_Audit_Log_v0.2.md:85` — "呼叫外部 API 花費 USD 0.05 →
   cost_delta = 5" (INTEGER cents, represents actual x402 / API payment).
-- **Partially resolved (schema + types):** cost is now INTEGER cents
-  end-to-end. Schema columns `audit_logs.cost_delta`,
-  `covenants.budget_limit`, `budget_counters.budget_limit/spent`, and
-  `budget_reservations.amount` are all `INTEGER`. Go types:
-  `execution.SideEffects.CostDelta`, `execution.Receipt.CostDelta`,
-  `audit.Entry.CostDelta`, `budget.State.Budget{Limit,Spent}`,
-  `covenant.Covenant.BudgetLimit` are `int64`. `EstimateCost` returns
-  `int64`. `NetDelta` stays `float64` because `cost_weight × cost_delta`
-  can be fractional.
+- **Partially resolved (schema + types + currency):** cost is now INTEGER
+  minor-units end-to-end plus an ISO-4217 `cost_currency` column. Schema
+  columns `audit_logs.cost_delta`, `covenants.budget_limit`,
+  `budget_counters.budget_limit/spent`, and `budget_reservations.amount`
+  are all `INTEGER`. Go types: `execution.SideEffects.CostDelta`,
+  `execution.Receipt.CostDelta`, `audit.Entry.CostDelta`,
+  `budget.State.Budget{Limit,Spent}`, `covenant.Covenant.BudgetLimit`
+  are `int64`. `EstimateCost` returns `int64`. `NetDelta` stays `float64`
+  because `cost_weight × cost_delta` can be fractional.
+- **Currency (Path A):** `audit_logs.cost_currency TEXT NOT NULL DEFAULT 'USD'`
+  added to the schema + migration. `audit.Entry.CostCurrency`,
+  `execution.SideEffects.CostCurrency`, `execution.Receipt.CostCurrency`
+  default to `"USD"` when unset. Budget tables still assume a single
+  covenant currency — multi-currency budget enforcement is deferred.
 - **Hash chain impact:** `audit.computeHash` branches on `spec_version`
-  — rows stamped `ACR-300@2.0` still format cost as `%.8f` (historical
-  compatibility); new rows stamp `ACR-300@2.1` and format cost as `%d`.
-  `VerifyChain` handles both. Schema default bumped to 2.1.
+  — 2.0 rows keep `%.8f` cost, 2.1 rows use `%d` cost with no currency
+  in the payload, 2.2 rows include `cost_currency` as a hash component
+  so 10 USD-cents cannot collide with 10 EUR-cents. `VerifyChain` handles
+  all three. Schema default bumped to 2.2.
 - **Still placeholder-valued:** `EstimateCost` returns hardcoded cents
   (`propose_passage`=10, `approve_draft`=5, `generate_settlement`=20);
   no real external spend yet. Unlocking real values needs x402 (below).

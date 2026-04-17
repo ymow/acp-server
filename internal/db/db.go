@@ -46,6 +46,9 @@ func applySchema(db *sql.DB) error {
 func applyMigrations(db *sql.DB) error {
 	migrations := []string{
 		`ALTER TABLE covenants ADD COLUMN cost_weight REAL NOT NULL DEFAULT 1.0`,
+		// ACR-300@2.2: cost_currency column on audit_logs. Default 'USD' keeps
+		// legacy rows verifiable (2.0/2.1 hash payloads never included currency).
+		`ALTER TABLE audit_logs ADD COLUMN cost_currency TEXT NOT NULL DEFAULT 'USD'`,
 	}
 	for _, stmt := range migrations {
 		if _, err := db.Exec(stmt); err != nil && !isDuplicateColumn(err) {

@@ -87,3 +87,51 @@ func TestComputeHash_CentsAsInteger(t *testing.T) {
 		t.Errorf("cost_delta %d and %d produced identical hashes", e.CostDelta, e2.CostDelta)
 	}
 }
+
+// TestComputeHash_CurrencyInHash_v22 locks in Path A: at 2.2 the currency
+// code is part of the payload, so a 10 USD-cent charge and a 10 EUR-cent
+// charge produce different hashes. Prevents cross-currency hash collisions
+// once x402 introduces non-USD settlements.
+func TestComputeHash_CurrencyInHash_v22(t *testing.T) {
+	base := Entry{
+		LogID:       "log_cur",
+		CovenantID:  "cov_cur",
+		Sequence:    1,
+		AgentID:     "a",
+		ToolName:    "t",
+		Result:      "success",
+		TokensDelta: 0,
+		CostDelta:   10,
+		NetDelta:    -10,
+		StateAfter:  "ACTIVE",
+		Timestamp:   time.Date(2026, 4, 18, 0, 0, 0, 0, time.UTC),
+		ParamsHash:  "ph",
+		SpecVersion: "ACR-300@2.2",
+	}
+
+	usd := base
+	usd.CostCurrency = "USD"
+	eur := base
+	eur.CostCurrency = "EUR"
+
+	if computeHash(usd) == computeHash(eur) {
+		t.Fatalf("USD and EUR entries must hash differently under 2.2")
+	}
+
+	// Regression: 2.1 ignored currency, so toggling currency on a 2.1 row
+	// MUST NOT change the hash (otherwise migrations break).
+	v21a := base
+	v21a.SpecVersion = "ACR-300@2.1"
+	v21a.CostCurrency = "USD"
+	v21b := base
+	v21b.SpecVersion = "ACR-300@2.1"
+	v21b.CostCurrency = "EUR"
+	if computeHash(v21a) != computeHash(v21b) {
+		t.Errorf("2.1 hash must ignore CostCurrency; currency only enters at 2.2")
+	}
+
+	// And 2.2 differs from 2.1 even for USD (currency added to payload).
+	if computeHash(usd) == computeHash(v21a) {
+		t.Errorf("2.2 USD must not match 2.1 USD (currency changes payload)")
+	}
+}

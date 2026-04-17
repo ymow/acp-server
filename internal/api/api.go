@@ -508,7 +508,7 @@ func (s *Server) handleGetAuditLog(w http.ResponseWriter, r *http.Request) {
 	limit := 50
 	rows, err := s.db.Query(`
 		SELECT log_id, sequence, agent_id, tool_name, result, tokens_delta,
-		       cost_delta, net_delta, state_before, state_after, timestamp, hash
+		       cost_delta, cost_currency, net_delta, state_before, state_after, timestamp, hash
 		FROM audit_logs WHERE covenant_id=? ORDER BY sequence DESC LIMIT ?`,
 		covenantID, limit)
 	if err != nil {
@@ -518,24 +518,25 @@ func (s *Server) handleGetAuditLog(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type row struct {
-		LogID       string  `json:"log_id"`
-		Sequence    int     `json:"sequence"`
-		AgentID     string  `json:"agent_id"`
-		ToolName    string  `json:"tool_name"`
-		Result      string  `json:"result"`
-		TokensDelta int     `json:"tokens_delta"`
-		CostDelta   int64   `json:"cost_delta"` // USD cents
-		NetDelta    float64 `json:"net_delta"`
-		StateBefore string  `json:"state_before"`
-		StateAfter  string  `json:"state_after"`
-		Timestamp   string  `json:"timestamp"`
-		Hash        string  `json:"hash"`
+		LogID        string  `json:"log_id"`
+		Sequence     int     `json:"sequence"`
+		AgentID      string  `json:"agent_id"`
+		ToolName     string  `json:"tool_name"`
+		Result       string  `json:"result"`
+		TokensDelta  int     `json:"tokens_delta"`
+		CostDelta    int64   `json:"cost_delta"`    // minor units of CostCurrency
+		CostCurrency string  `json:"cost_currency"` // ISO 4217 (ACR-300@2.2)
+		NetDelta     float64 `json:"net_delta"`
+		StateBefore  string  `json:"state_before"`
+		StateAfter   string  `json:"state_after"`
+		Timestamp    string  `json:"timestamp"`
+		Hash         string  `json:"hash"`
 	}
 	var entries []row
 	for rows.Next() {
 		var e row
 		rows.Scan(&e.LogID, &e.Sequence, &e.AgentID, &e.ToolName, &e.Result,
-			&e.TokensDelta, &e.CostDelta, &e.NetDelta, &e.StateBefore, &e.StateAfter,
+			&e.TokensDelta, &e.CostDelta, &e.CostCurrency, &e.NetDelta, &e.StateBefore, &e.StateAfter,
 			&e.Timestamp, &e.Hash)
 		entries = append(entries, e)
 	}

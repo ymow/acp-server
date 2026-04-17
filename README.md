@@ -37,7 +37,7 @@ Anchor:   settlements/2026-04-15-acp-server-phase1-2.json
 | Dependencies | stdlib only (zero external deps) |
 | DB | SQLite |
 | Auth | `X-Owner-Token` / `X-Session-Token` |
-| Audit | ACR-300 v0.2 hash chain (`spec_version=ACR-300@2.1`, integer-cents `cost_delta`) |
+| Audit | ACR-300 v0.2 hash chain (`spec_version=ACR-300@2.2`, integer `cost_delta` + ISO-4217 `cost_currency`) |
 | MCP Transport | JSON-RPC 2.0 over stdio (`cmd/acp-mcp`) |
 
 ---
@@ -295,7 +295,7 @@ See [ACP_Roadmap.md](https://github.com/ymow/acp-server) for the full Phase 0–
 - **Owner operations**: `X-Owner-Token` header required
 - **Participant operations**: `X-Session-Token` header required
 - Session tokens stored as SHA-256 hashes — raw tokens never persisted
-- Audit log is append-only with hash chain (ACR-300 v0.2) — any tampering breaks the chain
+- Audit log is append-only with hash chain (ACR-300@2.2) — any tampering breaks the chain. `cost_currency` is part of the hash payload, so USD/EUR/etc. charges cannot collide at the same numeric cost
 - Budget gate uses atomic SQLite `UPDATE WHERE remaining >= cost` — no double-spend
 - Budget counter can be rebuilt from the audit log (`budget.RebuildFromAuditLog`) — runtime cache drift is recoverable from durable storage
 - **ParamsPolicy** (ACP Spec v0.2 Part 6): each interface declares

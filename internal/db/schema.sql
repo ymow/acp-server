@@ -68,14 +68,15 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     result       TEXT NOT NULL,               -- success | rejected | error
     result_detail TEXT NOT NULL DEFAULT '',
     tokens_delta INTEGER NOT NULL DEFAULT 0,
-    cost_delta   INTEGER NOT NULL DEFAULT 0,  -- USD cents (ACR-300 v0.2)
+    cost_delta   INTEGER NOT NULL DEFAULT 0,  -- minor units of cost_currency (e.g. USD cents)
+    cost_currency TEXT NOT NULL DEFAULT 'USD', -- ISO 4217 (ACR-300@2.2)
     net_delta    REAL NOT NULL DEFAULT 0,     -- cost_weight × cost_delta may be fractional
     state_before TEXT NOT NULL,
     state_after  TEXT NOT NULL,
     timestamp    TEXT NOT NULL,               -- RFC3339 UTC
     prev_log_id  TEXT,                        -- NULL for genesis
     hash         TEXT NOT NULL,               -- SHA-256 chain hash
-    spec_version TEXT NOT NULL DEFAULT 'ACR-300@2.1',
+    spec_version TEXT NOT NULL DEFAULT 'ACR-300@2.2',
     UNIQUE(covenant_id, sequence)
 );
 CREATE INDEX IF NOT EXISTS idx_audit_covenant ON audit_logs(covenant_id, sequence);

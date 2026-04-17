@@ -12,13 +12,15 @@ import (
 )
 
 // SideEffects carries the computed outputs of Step 4.
-// CostDelta is USD cents; NetDelta stays float because cost_weight is a
+// CostDelta is in the minor units of CostCurrency (e.g. USD cents when
+// CostCurrency="USD"). NetDelta stays float because cost_weight is a
 // real-number multiplier.
 type SideEffects struct {
-	TokensDelta int
-	CostDelta   int64
-	NetDelta    float64
-	StateAfter  string
+	TokensDelta  int
+	CostDelta    int64
+	CostCurrency string // ISO 4217; empty means engine default ("USD")
+	NetDelta     float64
+	StateAfter   string
 }
 
 // Receipt is returned from Step 8.
@@ -29,7 +31,8 @@ type Receipt struct {
 	ToolName      string         `json:"tool_name"`
 	Status        string         `json:"status"`
 	TokensAwarded int            `json:"tokens_awarded"`
-	CostDelta     int64          `json:"cost_delta"` // USD cents
+	CostDelta     int64          `json:"cost_delta"`    // minor units of CostCurrency
+	CostCurrency  string         `json:"cost_currency"` // ISO 4217 code
 	NetDelta      float64        `json:"net_delta"`
 	Timestamp     string         `json:"timestamp"`
 	LogHash       string         `json:"log_hash"`
@@ -177,6 +180,9 @@ func (e *Engine) Run(covenantID, agentID, sessionID string, tool Tool, params ma
 	if effects.CostDelta == 0 && estimated > 0 {
 		effects.CostDelta = estimated
 	}
+	if effects.CostCurrency == "" {
+		effects.CostCurrency = "USD"
+	}
 	effects.NetDelta = float64(effects.TokensDelta) - cov.CostWeight*float64(effects.CostDelta)
 
 	// ── Step 5: Write Audit Log  ← MUST precede Step 6 ───────────────────
@@ -192,6 +198,7 @@ func (e *Engine) Run(covenantID, agentID, sessionID string, tool Tool, params ma
 		ResultDetail:  strVal(result, "detail"),
 		TokensDelta:   effects.TokensDelta,
 		CostDelta:     effects.CostDelta,
+		CostCurrency:  effects.CostCurrency,
 		NetDelta:      effects.NetDelta,
 		StateBefore:   cov.State,
 		StateAfter:    effects.StateAfter,
@@ -225,6 +232,7 @@ func (e *Engine) Run(covenantID, agentID, sessionID string, tool Tool, params ma
 		Status:        status,
 		TokensAwarded: effects.TokensDelta,
 		CostDelta:     effects.CostDelta,
+		CostCurrency:  effects.CostCurrency,
 		NetDelta:      effects.NetDelta,
 		Timestamp:     logEntry.Timestamp.UTC().Format("2006-01-02T15:04:05.999999999Z07:00"),
 		LogHash:       logEntry.Hash,

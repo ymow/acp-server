@@ -26,7 +26,8 @@ type Entry struct {
 	Result        string
 	ResultDetail  string
 	TokensDelta   int
-	CostDelta     int64   // USD cents (ACR-300 v0.2)
+	CostDelta     int64   // minor units of CostCurrency (e.g. USD cents)
+	CostCurrency  string  // ISO 4217 code; defaults to "USD" (ACR-300@2.2)
 	NetDelta      float64 // tokens_delta - cost_weight × cost_delta
 	StateBefore   string
 	StateAfter    string
@@ -67,7 +68,10 @@ func LogEvent(db *sql.DB, e Entry) (*Entry, error) {
 		e.Timestamp = time.Now().UTC()
 	}
 	if e.SpecVersion == "" {
-		e.SpecVersion = "ACR-300@2.1"
+		e.SpecVersion = "ACR-300@2.2"
+	}
+	if e.CostCurrency == "" {
+		e.CostCurrency = "USD"
 	}
 
 	// Compute params hash + preview
@@ -83,12 +87,12 @@ func LogEvent(db *sql.DB, e Entry) (*Entry, error) {
 		INSERT INTO audit_logs
 		  (log_id, covenant_id, sequence, agent_id, session_id,
 		   tool_name, tool_type, params_hash, params_preview, result,
-		   result_detail, tokens_delta, cost_delta, net_delta,
+		   result_detail, tokens_delta, cost_delta, cost_currency, net_delta,
 		   state_before, state_after, timestamp, prev_log_id, hash, spec_version)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		e.LogID, e.CovenantID, e.Sequence, e.AgentID, e.SessionID,
 		e.ToolName, e.ToolType, e.ParamsHash, string(preview), e.Result,
-		e.ResultDetail, e.TokensDelta, e.CostDelta, e.NetDelta,
+		e.ResultDetail, e.TokensDelta, e.CostDelta, e.CostCurrency, e.NetDelta,
 		e.StateBefore, e.StateAfter,
 		e.Timestamp.UTC().Format(time.RFC3339Nano),
 		nullableStr(e.PrevLogID), e.Hash, e.SpecVersion,
@@ -107,7 +111,7 @@ func LogEvent(db *sql.DB, e Entry) (*Entry, error) {
 func VerifyChain(db *sql.DB, covenantID string) (bool, []string) {
 	rows, err := db.Query(`
 		SELECT log_id, sequence, agent_id, session_id, tool_name, tool_type,
-		       params_hash, result, result_detail, tokens_delta, cost_delta, net_delta,
+		       params_hash, result, result_detail, tokens_delta, cost_delta, cost_currency, net_delta,
 		       state_before, state_after, timestamp, prev_log_id, hash, spec_version
 		FROM audit_logs WHERE covenant_id=? ORDER BY sequence`, covenantID)
 	if err != nil {
@@ -126,7 +130,7 @@ func VerifyChain(db *sql.DB, covenantID string) (bool, []string) {
 
 		err := rows.Scan(
 			&e.LogID, &e.Sequence, &e.AgentID, &e.SessionID, &e.ToolName, &e.ToolType,
-			&e.ParamsHash, &e.Result, &e.ResultDetail, &e.TokensDelta, &e.CostDelta, &e.NetDelta,
+			&e.ParamsHash, &e.Result, &e.ResultDetail, &e.TokensDelta, &e.CostDelta, &e.CostCurrency, &e.NetDelta,
 			&e.StateBefore, &e.StateAfter, &tsStr, &prevIDNull, &e.Hash, &e.SpecVersion,
 		)
 		if err != nil {
@@ -159,7 +163,9 @@ func VerifyChain(db *sql.DB, covenantID string) (bool, []string) {
 // spec_version so that a rewritten chain can still verify older rows:
 //
 //   - ACR-300@2.0 — CostDelta formatted %.8f (pre-integer-cents schema).
-//   - ACR-300@2.1 — CostDelta formatted %d (INTEGER cents, current default).
+//   - ACR-300@2.1 — CostDelta formatted %d (INTEGER minor units).
+//   - ACR-300@2.2 — adds CostCurrency (ISO 4217) as a hash component so a
+//     10-cent USD charge cannot collide with a 10-minor-unit EUR charge.
 //
 // NetDelta continues to use %.8f: cost_weight × cost_delta can be fractional
 // even when cost_delta itself is integer.
@@ -184,12 +190,20 @@ func computeHash(e Entry) string {
 		e.Result,
 		fmt.Sprintf("%d", e.TokensDelta),
 		costField,
+	}
+	// Currency entered the hash payload at 2.2. New versions that keep the
+	// field must be listed here explicitly (lexical >= breaks at 2.10).
+	switch e.SpecVersion {
+	case "ACR-300@2.2":
+		components = append(components, e.CostCurrency)
+	}
+	components = append(components,
 		fmt.Sprintf("%.8f", e.NetDelta),
 		e.StateAfter,
 		e.Timestamp.UTC().Format(time.RFC3339Nano),
 		e.ParamsHash,
 		e.SpecVersion,
-	}
+	)
 	payload := strings.Join(components, "|")
 	h := sha256.Sum256([]byte(payload))
 	return fmt.Sprintf("%x", h)
