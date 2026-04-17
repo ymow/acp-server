@@ -31,6 +31,7 @@ type Covenant struct {
 	PlatformSharePct   float64   `json:"platform_share_pct"`
 	ContributorPoolPct float64   `json:"contributor_pool_pct"`
 	BudgetLimit        float64   `json:"budget_limit"`
+	CostWeight         float64   `json:"cost_weight"` // ACR-20 §6: net_delta = tokens_delta - cost_weight × cost_delta
 	// OwnerToken is populated only in the Create response (shown once, never again).
 	OwnerToken string    `json:"owner_token,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
@@ -104,6 +105,7 @@ func (s *Service) Create(title, spaceType, ownerPlatformID string) (*Covenant, *
 		OwnerSharePct:      30,
 		PlatformSharePct:   0,
 		ContributorPoolPct: 70,
+		CostWeight:         1.0, // matches schema default
 		OwnerToken:         ownerToken, // shown once in Create response
 		CreatedAt:          now,
 		UpdatedAt:          now,
@@ -229,11 +231,11 @@ func (s *Service) Get(covenantID string) (*Covenant, error) {
 	err := s.db.QueryRow(`
 		SELECT covenant_id, version, space_type, title, description, state,
 		       owner_share_pct, platform_share_pct, contributor_pool_pct,
-		       budget_limit, created_at, updated_at
+		       budget_limit, cost_weight, created_at, updated_at
 		FROM covenants WHERE covenant_id=?`, covenantID,
 	).Scan(&c.CovenantID, &c.Version, &c.SpaceType, &c.Title, &c.Description, &c.State,
 		&c.OwnerSharePct, &c.PlatformSharePct, &c.ContributorPoolPct,
-		&c.BudgetLimit, &createdStr, &updatedStr)
+		&c.BudgetLimit, &c.CostWeight, &createdStr, &updatedStr)
 	if err != nil {
 		return nil, fmt.Errorf("covenant %q: %w", covenantID, err)
 	}

@@ -23,6 +23,10 @@ func Open(path string) (*sql.DB, error) {
 		conn.Close()
 		return nil, err
 	}
+	if err := applyMigrations(conn); err != nil {
+		conn.Close()
+		return nil, err
+	}
 	return conn, nil
 }
 
@@ -35,4 +39,31 @@ func applySchema(db *sql.DB) error {
 	}
 	_, err = db.Exec(string(data))
 	return err
+}
+
+// applyMigrations runs ALTER TABLE statements that CREATE TABLE IF NOT EXISTS cannot handle.
+// Each migration is idempotent: duplicate-column errors are swallowed so pre-existing DBs upgrade cleanly.
+func applyMigrations(db *sql.DB) error {
+	migrations := []string{
+		`ALTER TABLE covenants ADD COLUMN cost_weight REAL NOT NULL DEFAULT 1.0`,
+	}
+	for _, stmt := range migrations {
+		if _, err := db.Exec(stmt); err != nil && !isDuplicateColumn(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func isDuplicateColumn(err error) bool {
+	return err != nil && (contains(err.Error(), "duplicate column") || contains(err.Error(), "already exists"))
+}
+
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }

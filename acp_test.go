@@ -279,6 +279,250 @@ func TestBudgetExhaustion(t *testing.T) {
 	t.Logf("✓ AC-5  budget exhaustion correctly rejected: %v", err)
 }
 
+// TestCostAndNetDeltaAccounting verifies that audit_logs captures the actual
+// Step 2.5 estimated cost as cost_delta and computes net_delta per ACR-20 §6:
+//
+//	net_delta = tokens_delta - cost_weight × cost_delta
+//
+// Regression guard: before this fix, both columns were always 0 because no
+// tool populated SideEffects.{CostDelta,NetDelta}, causing reject_draft
+// refunds to no-op and settlement net-contribution math to be wrong.
+func TestCostAndNetDeltaAccounting(t *testing.T) {
+	conn, err := db.Open(t.TempDir() + "/netdelta_test.db")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer conn.Close()
+
+	covSvc := covenant.New(conn)
+	engine := execution.New(conn, covSvc)
+
+	cov, owner, err := covSvc.Create("NetDelta Test", "book", "pid_nd_owner")
+	must(t, err, "create")
+	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil), "add tier")
+	_, err = covSvc.Transition(cov.CovenantID, "OPEN")
+	must(t, err, "→OPEN")
+	agent, err := covSvc.Join(cov.CovenantID, "pid_nd_agent", "contributor")
+	must(t, err, "join")
+	_, err = covSvc.Transition(cov.CovenantID, "ACTIVE")
+	must(t, err, "→ACTIVE")
+	_, err = engine.Run(cov.CovenantID, owner.AgentID, "sess_owner",
+		&tools.ApproveAgent{}, map[string]any{"agent_id": agent.AgentID})
+	must(t, err, "approve agent")
+	must(t, budget.EnsureCounter(conn, cov.CovenantID, 1000.0), "budget")
+
+	// Propose: EstimateCost = 10, TokensDelta = 0 → expected cost_delta=10, net_delta=-10.
+	rp, err := engine.Run(cov.CovenantID, agent.AgentID, "sess_nd",
+		&tools.ProposePassage{}, map[string]any{"word_count": 1000})
+	must(t, err, "propose")
+	if rp.CostDelta != 10 {
+		t.Errorf("propose cost_delta: want 10, got %v", rp.CostDelta)
+	}
+	if rp.NetDelta != -10 {
+		t.Errorf("propose net_delta: want -10 (0 - 1.0×10), got %v", rp.NetDelta)
+	}
+
+	// Approve: EstimateCost = 5, TokensDelta = 1000 → expected cost_delta=5, net_delta=995.
+	draftID := getDraftID(t, conn, cov.CovenantID, agent.AgentID)
+	ra, err := engine.Run(cov.CovenantID, owner.AgentID, "sess_owner",
+		&tools.ApproveDraft{}, map[string]any{
+			"draft_id":         draftID,
+			"word_count":       1000,
+			"acceptance_ratio": 1.0,
+		})
+	must(t, err, "approve")
+	if ra.TokensAwarded != 1000 {
+		t.Fatalf("approve tokens: want 1000, got %d", ra.TokensAwarded)
+	}
+	if ra.CostDelta != 5 {
+		t.Errorf("approve cost_delta: want 5, got %v", ra.CostDelta)
+	}
+	wantNet := float64(1000) - 1.0*5.0
+	if ra.NetDelta != wantNet {
+		t.Errorf("approve net_delta: want %v (1000 - 1.0×5), got %v", wantNet, ra.NetDelta)
+	}
+
+	// Verify audit_logs row matches the receipt (not just the in-memory return).
+	var loggedCost, loggedNet float64
+	err = conn.QueryRow(
+		`SELECT cost_delta, net_delta FROM audit_logs WHERE log_id=?`, ra.ReceiptID,
+	).Scan(&loggedCost, &loggedNet)
+	must(t, err, "read audit_logs")
+	if loggedCost != 5 || loggedNet != wantNet {
+		t.Errorf("audit_logs drift: cost=%v net=%v, want cost=5 net=%v", loggedCost, loggedNet, wantNet)
+	}
+
+	t.Logf("✓ cost_delta/net_delta correctly recorded (propose=%v/%v, approve=%v/%v)",
+		rp.CostDelta, rp.NetDelta, ra.CostDelta, ra.NetDelta)
+}
+
+// TestMigrationAddsCostWeight verifies the idempotent ALTER TABLE migration
+// installs cost_weight on a legacy DB that predates the column, and is
+// a no-op on a DB that already has it.
+func TestMigrationAddsCostWeight(t *testing.T) {
+	dbPath := t.TempDir() + "/legacy.db"
+
+	// Simulate a pre-migration DB: create covenants table WITHOUT cost_weight.
+	legacy, err := sql.Open("sqlite", dbPath+"?_foreign_keys=on")
+	must(t, err, "open legacy")
+	_, err = legacy.Exec(`
+		CREATE TABLE covenants (
+			covenant_id TEXT PRIMARY KEY,
+			version     TEXT NOT NULL DEFAULT 'ACP@1.0',
+			space_type  TEXT NOT NULL DEFAULT 'book',
+			title       TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			state       TEXT NOT NULL DEFAULT 'DRAFT',
+			owner_share_pct REAL NOT NULL DEFAULT 30.0,
+			platform_share_pct REAL NOT NULL DEFAULT 0.0,
+			contributor_pool_pct REAL NOT NULL DEFAULT 70.0,
+			budget_limit REAL NOT NULL DEFAULT 0,
+			owner_token TEXT NOT NULL DEFAULT '',
+			token_rules_json TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);
+	`)
+	must(t, err, "create legacy covenants")
+	_, err = legacy.Exec(`INSERT INTO covenants (covenant_id, title, created_at, updated_at)
+		VALUES ('cvnt_legacy', 'Old Book', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
+	must(t, err, "seed legacy row")
+	legacy.Close()
+
+	// First open: migration should ADD cost_weight and backfill the legacy row to 1.0.
+	conn, err := db.Open(dbPath)
+	must(t, err, "open with migration")
+	var weight float64
+	err = conn.QueryRow(`SELECT cost_weight FROM covenants WHERE covenant_id='cvnt_legacy'`).Scan(&weight)
+	must(t, err, "read cost_weight")
+	if weight != 1.0 {
+		t.Errorf("legacy row backfill: want cost_weight=1.0, got %v", weight)
+	}
+
+	// Second open: migration must be a no-op (duplicate column swallowed).
+	conn.Close()
+	conn2, err := db.Open(dbPath)
+	must(t, err, "reopen")
+	defer conn2.Close()
+	err = conn2.QueryRow(`SELECT cost_weight FROM covenants WHERE covenant_id='cvnt_legacy'`).Scan(&weight)
+	must(t, err, "re-read cost_weight")
+	t.Logf("✓ migration idempotent; cost_weight=%v", weight)
+}
+
+// TestRejectDraftRefundsBudget verifies that after approve_draft deducts cost
+// from the budget, reject_draft refunds that same amount. This only works
+// because audit_logs.cost_delta now carries the real cost (was always 0 before
+// the TokensDelta/CostDelta/NetDelta wiring fix).
+func TestRejectDraftRefundsBudget(t *testing.T) {
+	conn, err := db.Open(t.TempDir() + "/refund_test.db")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer conn.Close()
+
+	covSvc := covenant.New(conn)
+	engine := execution.New(conn, covSvc)
+
+	cov, owner, err := covSvc.Create("Refund Test", "book", "pid_r_owner")
+	must(t, err, "create")
+	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil), "add tier")
+	_, err = covSvc.Transition(cov.CovenantID, "OPEN")
+	must(t, err, "→OPEN")
+	agent, err := covSvc.Join(cov.CovenantID, "pid_r_agent", "contributor")
+	must(t, err, "join")
+	_, err = covSvc.Transition(cov.CovenantID, "ACTIVE")
+	must(t, err, "→ACTIVE")
+	_, err = engine.Run(cov.CovenantID, owner.AgentID, "sess_owner",
+		&tools.ApproveAgent{}, map[string]any{"agent_id": agent.AgentID})
+	must(t, err, "approve agent")
+	must(t, budget.EnsureCounter(conn, cov.CovenantID, 1000.0), "budget")
+
+	_, err = engine.Run(cov.CovenantID, agent.AgentID, "sess_r",
+		&tools.ProposePassage{}, map[string]any{"word_count": 1000})
+	must(t, err, "propose")
+	draftID := getDraftID(t, conn, cov.CovenantID, agent.AgentID)
+	approveReceipt, err := engine.Run(cov.CovenantID, owner.AgentID, "sess_owner",
+		&tools.ApproveDraft{}, map[string]any{
+			"draft_id":         draftID,
+			"word_count":       1000,
+			"acceptance_ratio": 1.0,
+		})
+	must(t, err, "approve")
+
+	before, err := budget.GetState(conn, cov.CovenantID)
+	must(t, err, "budget before")
+	// Expect propose (10) + approve (5) = 15 spent.
+	if before.BudgetSpent != 15 {
+		t.Fatalf("budget_spent before reject: want 15, got %v", before.BudgetSpent)
+	}
+
+	_, err = engine.Run(cov.CovenantID, owner.AgentID, "sess_owner",
+		&tools.RejectDraft{}, map[string]any{
+			"log_id": approveReceipt.ReceiptID,
+			"reason": "test refund",
+		})
+	must(t, err, "reject_draft")
+
+	after, err := budget.GetState(conn, cov.CovenantID)
+	must(t, err, "budget after")
+	// approve cost (5) should be refunded; propose cost (10) stays spent.
+	if after.BudgetSpent != 10 {
+		t.Errorf("budget_spent after reject: want 10 (propose cost only), got %v", after.BudgetSpent)
+	}
+	t.Logf("✓ reject_draft refunded budget: 15 → %v", after.BudgetSpent)
+}
+
+// TestCostWeightApplied verifies net_delta honours a non-default cost_weight,
+// so operators can bias the trade-off between tokens earned and cost spent.
+func TestCostWeightApplied(t *testing.T) {
+	conn, err := db.Open(t.TempDir() + "/cost_weight_test.db")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer conn.Close()
+
+	covSvc := covenant.New(conn)
+	engine := execution.New(conn, covSvc)
+
+	cov, owner, err := covSvc.Create("Weight Test", "book", "pid_w_owner")
+	must(t, err, "create")
+	// Override cost_weight directly; there is no tool for this yet (P1 work).
+	_, err = conn.Exec(`UPDATE covenants SET cost_weight=? WHERE covenant_id=?`, 3.0, cov.CovenantID)
+	must(t, err, "set cost_weight=3.0")
+
+	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil), "add tier")
+	_, err = covSvc.Transition(cov.CovenantID, "OPEN")
+	must(t, err, "→OPEN")
+	agent, err := covSvc.Join(cov.CovenantID, "pid_w_agent", "contributor")
+	must(t, err, "join")
+	_, err = covSvc.Transition(cov.CovenantID, "ACTIVE")
+	must(t, err, "→ACTIVE")
+	_, err = engine.Run(cov.CovenantID, owner.AgentID, "sess_owner",
+		&tools.ApproveAgent{}, map[string]any{"agent_id": agent.AgentID})
+	must(t, err, "approve agent")
+	must(t, budget.EnsureCounter(conn, cov.CovenantID, 1000.0), "budget")
+
+	_, err = engine.Run(cov.CovenantID, agent.AgentID, "sess_w",
+		&tools.ProposePassage{}, map[string]any{"word_count": 500})
+	must(t, err, "propose")
+
+	draftID := getDraftID(t, conn, cov.CovenantID, agent.AgentID)
+	ra, err := engine.Run(cov.CovenantID, owner.AgentID, "sess_owner",
+		&tools.ApproveDraft{}, map[string]any{
+			"draft_id":         draftID,
+			"word_count":       500,
+			"acceptance_ratio": 1.0,
+		})
+	must(t, err, "approve")
+
+	// tokens_delta = 500, cost_delta = 5, cost_weight = 3.0 → net_delta = 500 - 15 = 485.
+	wantNet := float64(500) - 3.0*5.0
+	if ra.NetDelta != wantNet {
+		t.Errorf("net_delta with cost_weight=3.0: want %v, got %v", wantNet, ra.NetDelta)
+	}
+	t.Logf("✓ cost_weight=3.0 applied: net_delta=%v", ra.NetDelta)
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 func must(t *testing.T, err error, label string) {

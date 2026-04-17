@@ -120,6 +120,14 @@ func (e *Engine) Run(covenantID, agentID, sessionID string, tool Tool, params ma
 	if effects.StateAfter == "" {
 		effects.StateAfter = cov.State
 	}
+	// ACR-20 §6 / Execution Layer §Step 4c: if the tool did not set its own
+	// cost_delta, fall back to the Step 2.5 estimate — otherwise audit_logs
+	// records cost_delta=0 while budget_counters actually deducts the cost,
+	// breaking reject_draft refunds and net-contribution accounting.
+	if effects.CostDelta == 0 && estimated > 0 {
+		effects.CostDelta = estimated
+	}
+	effects.NetDelta = float64(effects.TokensDelta) - cov.CostWeight*effects.CostDelta
 
 	// ── Step 5: Write Audit Log  ← MUST precede Step 6 ───────────────────
 	maskedParams := maskSensitive(params)

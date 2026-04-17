@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS covenants (
     platform_share_pct REAL NOT NULL DEFAULT 0.0,
     contributor_pool_pct REAL NOT NULL DEFAULT 70.0,
     budget_limit    REAL NOT NULL DEFAULT 0,  -- 0 = unlimited
+    cost_weight     REAL NOT NULL DEFAULT 1.0, -- ACR-20 §6: net_delta = tokens_delta - cost_weight × cost_delta
     owner_token     TEXT NOT NULL DEFAULT '', -- A-2: bearer token for owner-only operations
     token_rules_json TEXT NOT NULL DEFAULT '', -- JSON array of TokenRule objects
     created_at      TEXT NOT NULL,
