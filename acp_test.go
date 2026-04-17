@@ -409,6 +409,111 @@ func TestMigrationAddsCostWeight(t *testing.T) {
 	t.Logf("✓ migration idempotent; cost_weight=%v", weight)
 }
 
+// TestOwnerIDExplicit verifies Phase 3.0 housekeeping: covenants.owner_id is
+// populated on Create, round-trips through Get, and GetOwnerAgentID reads it
+// directly without the is_owner=1 JOIN. Unblocks Constitutional Principle #2
+// (agent_id vs owner_id as separately addressable concepts).
+func TestOwnerIDExplicit(t *testing.T) {
+	conn, err := db.Open(t.TempDir() + "/owner_id_test.db")
+	must(t, err, "open db")
+	defer conn.Close()
+
+	covSvc := covenant.New(conn)
+	cov, owner, err := covSvc.Create("Owner ID Test", "book", "pid_owner_x")
+	must(t, err, "create")
+	if cov.OwnerID == "" {
+		t.Fatal("OwnerID empty after Create")
+	}
+	if cov.OwnerID != owner.AgentID {
+		t.Errorf("OwnerID=%q does not match owner member agent_id=%q", cov.OwnerID, owner.AgentID)
+	}
+
+	// Round-trip through Get.
+	got, err := covSvc.Get(cov.CovenantID)
+	must(t, err, "get")
+	if got.OwnerID != owner.AgentID {
+		t.Errorf("Get.OwnerID=%q, want %q", got.OwnerID, owner.AgentID)
+	}
+
+	// Fast-path: GetOwnerAgentID returns owner_id even if we null out the
+	// covenant_members.is_owner flag (proves the lookup no longer depends on it).
+	_, err = conn.Exec(`UPDATE covenant_members SET is_owner=0 WHERE covenant_id=?`, cov.CovenantID)
+	must(t, err, "clear is_owner flag")
+	agentID, err := covSvc.GetOwnerAgentID(cov.CovenantID)
+	must(t, err, "get owner agent id")
+	if agentID != owner.AgentID {
+		t.Errorf("GetOwnerAgentID=%q after is_owner cleared, want %q", agentID, owner.AgentID)
+	}
+}
+
+// TestMigrationBackfillsOwnerID verifies a pre-3.0 covenant (no owner_id column,
+// ownership only via is_owner=1) gets backfilled on first open. This matters
+// because Phase 3.B+ starts reading owner_id directly — a legacy row with an
+// empty owner_id would break GetOwnerAgentID's fast path.
+func TestMigrationBackfillsOwnerID(t *testing.T) {
+	dbPath := t.TempDir() + "/legacy_owner.db"
+
+	legacy, err := sql.Open("sqlite", dbPath+"?_foreign_keys=on")
+	must(t, err, "open legacy")
+	_, err = legacy.Exec(`
+		CREATE TABLE covenants (
+			covenant_id TEXT PRIMARY KEY,
+			version     TEXT NOT NULL DEFAULT 'ACP@1.0',
+			space_type  TEXT NOT NULL DEFAULT 'book',
+			title       TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			state       TEXT NOT NULL DEFAULT 'DRAFT',
+			owner_share_pct REAL NOT NULL DEFAULT 30.0,
+			platform_share_pct REAL NOT NULL DEFAULT 0.0,
+			contributor_pool_pct REAL NOT NULL DEFAULT 70.0,
+			budget_limit REAL NOT NULL DEFAULT 0,
+			owner_token TEXT NOT NULL DEFAULT '',
+			token_rules_json TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);
+		CREATE TABLE covenant_members (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			covenant_id  TEXT NOT NULL,
+			platform_id  TEXT NOT NULL,
+			agent_id     TEXT NOT NULL,
+			tier_id      TEXT,
+			is_owner     INTEGER NOT NULL DEFAULT 0,
+			status       TEXT NOT NULL DEFAULT 'active',
+			joined_at    TEXT NOT NULL
+		);
+	`)
+	must(t, err, "create legacy tables")
+	_, err = legacy.Exec(`INSERT INTO covenants (covenant_id, title, created_at, updated_at)
+		VALUES ('cvnt_legacy_owner', 'Old Book', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
+	must(t, err, "seed legacy covenant")
+	_, err = legacy.Exec(`INSERT INTO covenant_members
+		(covenant_id, platform_id, agent_id, is_owner, status, joined_at)
+		VALUES ('cvnt_legacy_owner', 'pid_legacy', 'agent_legacy_owner', 1, 'active', '2026-01-01T00:00:00Z')`)
+	must(t, err, "seed legacy owner member")
+	legacy.Close()
+
+	// First open runs ALTER + backfill.
+	conn, err := db.Open(dbPath)
+	must(t, err, "open with migration")
+	defer conn.Close()
+	var ownerID string
+	err = conn.QueryRow(`SELECT owner_id FROM covenants WHERE covenant_id='cvnt_legacy_owner'`).Scan(&ownerID)
+	must(t, err, "read owner_id")
+	if ownerID != "agent_legacy_owner" {
+		t.Errorf("backfill: want owner_id=agent_legacy_owner, got %q", ownerID)
+	}
+
+	// Second open: backfill is a no-op (WHERE owner_id='' skips populated rows).
+	var ownerAfter string
+	err = conn.QueryRow(`SELECT owner_id FROM covenants WHERE covenant_id='cvnt_legacy_owner'`).Scan(&ownerAfter)
+	must(t, err, "re-read owner_id")
+	if ownerAfter != "agent_legacy_owner" {
+		t.Errorf("backfill not idempotent: got %q", ownerAfter)
+	}
+	t.Logf("✓ owner_id backfilled from is_owner=1 lookup")
+}
+
 // TestRejectDraftRefundsBudget verifies that after approve_draft deducts cost
 // from the budget, reject_draft refunds that same amount. This only works
 // because audit_logs.cost_delta now carries the real cost (was always 0 before

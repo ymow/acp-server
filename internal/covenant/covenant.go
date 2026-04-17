@@ -27,6 +27,7 @@ type Covenant struct {
 	Title              string    `json:"title"`
 	Description        string    `json:"description"`
 	State              string    `json:"state"`
+	OwnerID            string    `json:"owner_id"` // agent_id of owner member; authoritative, not derived
 	OwnerSharePct      float64   `json:"owner_share_pct"`
 	PlatformSharePct   float64   `json:"platform_share_pct"`
 	ContributorPoolPct float64   `json:"contributor_pool_pct"`
@@ -65,10 +66,11 @@ func (s *Service) Create(title, spaceType, ownerPlatformID string) (*Covenant, *
 	defer tx.Rollback()
 
 	ownerToken := randomHex(32)
+	agentID := id.Agent()
 	_, err = tx.Exec(`
-		INSERT INTO covenants (covenant_id, title, space_type, state, owner_token, created_at, updated_at)
-		VALUES (?, ?, ?, 'DRAFT', ?, ?, ?)`,
-		covenantID, title, spaceType, ownerToken, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano),
+		INSERT INTO covenants (covenant_id, title, space_type, state, owner_id, owner_token, created_at, updated_at)
+		VALUES (?, ?, ?, 'DRAFT', ?, ?, ?, ?)`,
+		covenantID, title, spaceType, agentID, ownerToken, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano),
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create covenant: %w", err)
@@ -83,7 +85,6 @@ func (s *Service) Create(title, spaceType, ownerPlatformID string) (*Covenant, *
 		return nil, nil, err
 	}
 
-	agentID := id.Agent()
 	_, err = tx.Exec(`
 		INSERT INTO covenant_members (covenant_id, platform_id, agent_id, is_owner, status, joined_at)
 		VALUES (?, ?, ?, 1, 'active', ?)`,
@@ -103,6 +104,7 @@ func (s *Service) Create(title, spaceType, ownerPlatformID string) (*Covenant, *
 		SpaceType:          spaceType,
 		Title:              title,
 		State:              "DRAFT",
+		OwnerID:            agentID,
 		OwnerSharePct:      30,
 		PlatformSharePct:   0,
 		ContributorPoolPct: 70,
@@ -232,11 +234,11 @@ func (s *Service) Get(covenantID string) (*Covenant, error) {
 	var createdStr, updatedStr string
 	err := s.db.QueryRow(`
 		SELECT covenant_id, version, space_type, title, description, state,
-		       owner_share_pct, platform_share_pct, contributor_pool_pct,
+		       owner_id, owner_share_pct, platform_share_pct, contributor_pool_pct,
 		       budget_limit, budget_currency, cost_weight, created_at, updated_at
 		FROM covenants WHERE covenant_id=?`, covenantID,
 	).Scan(&c.CovenantID, &c.Version, &c.SpaceType, &c.Title, &c.Description, &c.State,
-		&c.OwnerSharePct, &c.PlatformSharePct, &c.ContributorPoolPct,
+		&c.OwnerID, &c.OwnerSharePct, &c.PlatformSharePct, &c.ContributorPoolPct,
 		&c.BudgetLimit, &c.BudgetCurrency, &c.CostWeight, &createdStr, &updatedStr)
 	if err != nil {
 		return nil, fmt.Errorf("covenant %q: %w", covenantID, err)
@@ -284,10 +286,19 @@ func (s *Service) State(covenantID string) (string, error) {
 	return cov.State, nil
 }
 
-// GetOwnerAgentID returns the agent_id of the covenant owner member.
+// GetOwnerAgentID returns the agent_id of the covenant owner.
+// Reads covenants.owner_id directly; falls back to the is_owner=1 lookup for
+// pre-migration rows that somehow bypassed the backfill.
 func (s *Service) GetOwnerAgentID(covenantID string) (string, error) {
 	var agentID string
-	err := s.db.QueryRow(
+	err := s.db.QueryRow(`SELECT owner_id FROM covenants WHERE covenant_id=?`, covenantID).Scan(&agentID)
+	if err != nil {
+		return "", fmt.Errorf("owner agent for covenant %q: %w", covenantID, err)
+	}
+	if agentID != "" {
+		return agentID, nil
+	}
+	err = s.db.QueryRow(
 		`SELECT agent_id FROM covenant_members WHERE covenant_id=? AND is_owner=1`,
 		covenantID,
 	).Scan(&agentID)

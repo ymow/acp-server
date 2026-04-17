@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS covenants (
     title           TEXT NOT NULL,
     description     TEXT NOT NULL DEFAULT '',
     state           TEXT NOT NULL DEFAULT 'DRAFT',
+    owner_id        TEXT NOT NULL DEFAULT '', -- covenant_members.agent_id of the owner role (explicit, not derived)
     owner_share_pct REAL NOT NULL DEFAULT 30.0,
     platform_share_pct REAL NOT NULL DEFAULT 0.0,
     contributor_pool_pct REAL NOT NULL DEFAULT 70.0,

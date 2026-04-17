@@ -53,11 +53,32 @@ func applyMigrations(db *sql.DB) error {
 		// a charge whose CostCurrency doesn't match covenants.budget_currency.
 		`ALTER TABLE covenants ADD COLUMN budget_currency TEXT NOT NULL DEFAULT 'USD'`,
 		`ALTER TABLE budget_counters ADD COLUMN currency TEXT NOT NULL DEFAULT 'USD'`,
+		// Phase 3.0: make covenant ownership load-bearing in the schema
+		// instead of derived via is_owner=1 lookups. Enables Constitutional
+		// Principle #2 (agent_id vs owner_id separation) and Git Twin mapping.
+		`ALTER TABLE covenants ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, stmt := range migrations {
 		if _, err := db.Exec(stmt); err != nil && !isDuplicateColumn(err) {
 			return err
 		}
+	}
+	// Backfill owner_id for pre-migration rows. Idempotent: WHERE owner_id=''
+	// skips rows already populated; EXISTS guard avoids NULL → NOT NULL violation
+	// on legacy covenants that somehow have no owner member.
+	if _, err := db.Exec(`
+		UPDATE covenants
+		SET owner_id = (
+			SELECT agent_id FROM covenant_members
+			WHERE covenant_id = covenants.covenant_id AND is_owner = 1
+			LIMIT 1
+		)
+		WHERE owner_id = ''
+		  AND EXISTS (
+		    SELECT 1 FROM covenant_members
+		    WHERE covenant_id = covenants.covenant_id AND is_owner = 1
+		  )`); err != nil {
+		return err
 	}
 	return nil
 }
