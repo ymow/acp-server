@@ -45,8 +45,6 @@ func (t *RejectDraft) CheckPreconditions(ctx *execution.Context, params map[stri
 	return nil
 }
 
-func (t *RejectDraft) EstimateCost(_ *execution.Context, _ map[string]any) int64 { return 0 }
-
 func (t *RejectDraft) ExecuteLogic(ctx *execution.Context, params map[string]any) (map[string]any, error) {
 	logID, _ := params["log_id"].(string)
 	reason, _ := params["reason"].(string)

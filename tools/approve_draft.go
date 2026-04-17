@@ -114,4 +114,3 @@ func (t *ApproveDraft) ApplySideEffects(ctx *execution.Context, log *audit.Entry
 	return tokens.ConfirmContribution(ctx.DB, ctx.Covenant.CovenantID, proposerAgentID, log.LogID, draftID, effects.TokensDelta)
 }
 
-func (t *ApproveDraft) EnrichReceipt(_ *execution.Receipt, _ map[string]any) {}

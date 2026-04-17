@@ -43,8 +43,6 @@ func (t *RejectAgent) CheckPreconditions(ctx *execution.Context, params map[stri
 	return nil
 }
 
-func (t *RejectAgent) EstimateCost(_ *execution.Context, _ map[string]any) int64 { return 0 }
-
 func (t *RejectAgent) ExecuteLogic(_ *execution.Context, params map[string]any) (map[string]any, error) {
 	agentID, _ := params["agent_id"].(string)
 	reason, _ := params["reason"].(string)

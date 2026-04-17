@@ -48,10 +48,6 @@ func (t *ConfirmSettlementOutput) CheckPreconditions(ctx *execution.Context, par
 	return nil
 }
 
-func (t *ConfirmSettlementOutput) EstimateCost(_ *execution.Context, _ map[string]any) int64 {
-	return 0
-}
-
 func (t *ConfirmSettlementOutput) ExecuteLogic(_ *execution.Context, params map[string]any) (map[string]any, error) {
 	outputID, _ := params["settlement_output_id"].(string)
 	confirmedAt := time.Now().UTC().Format(time.RFC3339)

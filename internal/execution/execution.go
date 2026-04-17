@@ -44,16 +44,17 @@ type Context struct {
 	CovenantSvc *covenant.Service
 }
 
-// Tool is the interface every ACP clause/admin tool must satisfy.
+// Tool is the core interface every ACP clause/admin tool must satisfy.
+// The engine calls these methods on every Run; optional capabilities are
+// declared via the separate mixin interfaces below (CostEstimator,
+// ReceiptEnricher, PolicyAware) so that adding a new cross-cutting
+// concern does not force every tool file to change.
 type Tool interface {
 	ToolName() string
 	ToolType() string
 
 	// Step 2: additional precondition checks (identity already verified by engine)
 	CheckPreconditions(ctx *Context, params map[string]any) error
-
-	// Step 2.5: estimated cost for budget gate (USD cents); return 0 to skip.
-	EstimateCost(ctx *Context, params map[string]any) int64
 
 	// Step 3: execute core logic, return result data
 	ExecuteLogic(ctx *Context, params map[string]any) (map[string]any, error)
@@ -63,21 +64,53 @@ type Tool interface {
 
 	// Step 6: apply side effects (token writes, state changes, etc.)
 	ApplySideEffects(ctx *Context, log *audit.Entry, effects SideEffects, result map[string]any, params map[string]any) error
+}
 
-	// Step 8: enrich the receipt (optional extra fields)
+// ── Optional capability interfaces ────────────────────────────────────────
+//
+// A tool implements zero or more of these. Adding a new capability should
+// mean adding a new interface here, not modifying Tool — this is the whole
+// point of the split. Engine resolution is via type assertion.
+
+// CostEstimator is implemented by tools that charge an external cost (x402,
+// API fees, etc.). Tools that do not implement it contribute 0 to the
+// budget gate and produce cost_delta=0 in the audit log.
+type CostEstimator interface {
+	EstimateCost(ctx *Context, params map[string]any) int64 // USD cents
+}
+
+// ReceiptEnricher is implemented by tools that want to append extra fields
+// to the Step 8 receipt (status tags, output IDs, confirmation timestamps).
+// Tools that do not implement it return a bare receipt.
+type ReceiptEnricher interface {
 	EnrichReceipt(receipt *Receipt, result map[string]any)
 }
 
-// PolicyAwareTool is optionally implemented by tools that want to override
-// the default params-preview masking. The engine prefers this over the
-// legacy DefaultParamsPolicy() when a tool implements it.
-type PolicyAwareTool interface {
+// PolicyAware is implemented by tools that want to override the default
+// params-preview masking. The engine falls back to DefaultParamsPolicy()
+// when a tool does not implement it.
+type PolicyAware interface {
 	ParamsPolicy() ParamsPolicy
+}
+
+// resolveCost returns the tool's cost estimate (0 if no CostEstimator).
+func resolveCost(tool Tool, ctx *Context, params map[string]any) int64 {
+	if c, ok := tool.(CostEstimator); ok {
+		return c.EstimateCost(ctx, params)
+	}
+	return 0
+}
+
+// resolveEnrich applies any ReceiptEnricher the tool declares. No-op if absent.
+func resolveEnrich(tool Tool, receipt *Receipt, result map[string]any) {
+	if e, ok := tool.(ReceiptEnricher); ok {
+		e.EnrichReceipt(receipt, result)
+	}
 }
 
 // resolvePolicy returns the tool's declared ParamsPolicy or the default.
 func resolvePolicy(tool Tool) ParamsPolicy {
-	if p, ok := tool.(PolicyAwareTool); ok {
+	if p, ok := tool.(PolicyAware); ok {
 		return p.ParamsPolicy()
 	}
 	return DefaultParamsPolicy()
@@ -117,7 +150,7 @@ func (e *Engine) Run(covenantID, agentID, sessionID string, tool Tool, params ma
 	}
 
 	// ── Step 2.5: Budget gate (WI6: check-only, create reservation) ───────
-	estimated := tool.EstimateCost(ctx, params)
+	estimated := resolveCost(tool, ctx, params)
 	reservationID, err := budget.CheckAndReserve(e.db, covenantID, estimated)
 	if err != nil {
 		e.logRejection(covenantID, agentID, sessionID, tool, params, cov.State, err.Error())
@@ -197,7 +230,7 @@ func (e *Engine) Run(covenantID, agentID, sessionID string, tool Tool, params ma
 		LogHash:       logEntry.Hash,
 		Extra:         map[string]any{},
 	}
-	tool.EnrichReceipt(receipt, result)
+	resolveEnrich(tool, receipt, result)
 	return receipt, nil
 }
 

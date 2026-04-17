@@ -45,8 +45,6 @@ func (t *ApproveAgent) CheckPreconditions(ctx *execution.Context, params map[str
 	return nil
 }
 
-func (t *ApproveAgent) EstimateCost(_ *execution.Context, _ map[string]any) int64 { return 0 }
-
 func (t *ApproveAgent) ExecuteLogic(_ *execution.Context, params map[string]any) (map[string]any, error) {
 	agentID, _ := params["agent_id"].(string)
 	approvedAt := time.Now().UTC().Format(time.RFC3339)

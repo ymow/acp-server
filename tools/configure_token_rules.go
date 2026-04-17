@@ -35,8 +35,6 @@ func (t *ConfigureTokenRules) CheckPreconditions(ctx *execution.Context, params 
 	return nil
 }
 
-func (t *ConfigureTokenRules) EstimateCost(_ *execution.Context, _ map[string]any) int64 { return 0 }
-
 func (t *ConfigureTokenRules) ExecuteLogic(_ *execution.Context, params map[string]any) (map[string]any, error) {
 	rulesJSON, err := json.Marshal(params["rules"])
 	if err != nil {

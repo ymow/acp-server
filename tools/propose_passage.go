@@ -69,4 +69,3 @@ func (t *ProposePassage) ApplySideEffects(ctx *execution.Context, _ *audit.Entry
 	return tokens.CreatePending(ctx.DB, ctx.Covenant.CovenantID, ctx.Member.AgentID, result["draft_id"].(string))
 }
 
-func (t *ProposePassage) EnrichReceipt(_ *execution.Receipt, _ map[string]any) {}
