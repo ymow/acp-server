@@ -101,7 +101,24 @@ func (t *ApproveDraft) CalculateSideEffects(ctx *execution.Context, result map[s
 			ctx.Covenant.CovenantID, tierID).Scan(&multiplier)
 	}
 
+	// ACR-20 Part 2: prefer a configured TokenRule for the originating clause
+	// (propose_passage) when available. Falls back to the legacy fixed formula
+	// so covenants created before configure_token_rules keep working.
 	delta := tokens.Calculate(uc, multiplier, ratio)
+	var rulesJSON string
+	_ = ctx.DB.QueryRow(`SELECT token_rules_json FROM covenants WHERE covenant_id=?`,
+		ctx.Covenant.CovenantID).Scan(&rulesJSON)
+	if rules, err := tokens.ParseRules(rulesJSON); err == nil {
+		if rule, ok := rules["propose_passage"]; ok {
+			if v, err := rule.Evaluate(tokens.RuleVars{
+				WordCount:       uc,
+				AcceptanceRatio: ratio,
+				TierMultiplier:  multiplier,
+			}); err == nil {
+				delta = v
+			}
+		}
+	}
 	return execution.SideEffects{
 		TokensDelta: delta,
 		StateAfter:  ctx.Covenant.State,

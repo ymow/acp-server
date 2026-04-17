@@ -224,6 +224,34 @@ var allTools = []toolDef{
 		Description: "Return all covenant members with their token totals. Uses X-Owner-Token auth.",
 		InputSchema: makeSchema(map[string]any{}, nil),
 	},
+	{
+		Name:        "get_token_history",
+		Description: "Return token ledger entries for an agent (ACR-20 Part 7). Optional from/to (ISO 8601) and status filter. Requires session token.",
+		InputSchema: makeSchema(map[string]any{
+			"from": map[string]any{
+				"type":        "string",
+				"description": "Inclusive lower bound, ISO 8601 timestamp (optional)",
+			},
+			"to": map[string]any{
+				"type":        "string",
+				"description": "Inclusive upper bound, ISO 8601 timestamp (optional)",
+			},
+			"status": map[string]any{
+				"type":        "string",
+				"description": "Filter by ledger status: confirmed | pending | rejected (optional)",
+			},
+		}, nil),
+	},
+	{
+		Name:        "leave_covenant",
+		Description: "Mark the calling agent as having left the covenant. Confirmed token entries are preserved. Owner cannot leave.",
+		InputSchema: makeSchema(map[string]any{
+			"reason": map[string]any{
+				"type":        "string",
+				"description": "Optional reason for leaving",
+			},
+		}, nil),
+	},
 }
 
 // ── Config from environment ───────────────────────────────────────────────────

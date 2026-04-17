@@ -46,6 +46,8 @@ func TestToolsListAllTen(t *testing.T) {
 		"confirm_settlement_output",
 		"get_token_balance",
 		"list_members",
+		"get_token_history",
+		"leave_covenant",
 	}
 
 	req := rpcRequest{

@@ -15,3 +15,10 @@ type ListMembers struct{}
 
 func (t *ListMembers) ToolName() string { return "list_members" }
 func (t *ListMembers) ToolType() string { return "query" }
+
+// GetTokenHistory is a metadata stub for the get_token_history query tool
+// (ACR-20 Part 7). Query runs in api.go handleGetTokenHistory.
+type GetTokenHistory struct{}
+
+func (t *GetTokenHistory) ToolName() string { return "get_token_history" }
+func (t *GetTokenHistory) ToolType() string { return "query" }

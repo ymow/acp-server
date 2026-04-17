@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/inkmesh/acp-server/internal/audit"
 	"github.com/inkmesh/acp-server/internal/budget"
@@ -810,6 +811,215 @@ func TestCrossCurrencyChargeRejected(t *testing.T) {
 		t.Errorf("expected 0 success audit rows, got %d", successCount)
 	}
 	t.Logf("✓ cross-currency charge rejected: %v", err)
+}
+
+// ── Phase 3.B ────────────────────────────────────────────────────────────────
+
+func TestSpaceTypeValidation(t *testing.T) {
+	conn, err := db.Open(t.TempDir() + "/space_type.db")
+	must(t, err, "open db")
+	defer conn.Close()
+	covSvc := covenant.New(conn)
+
+	for _, st := range []string{"book", "code", "music", "research", "custom"} {
+		if _, _, err := covSvc.Create("st-"+st, st, "pid_"+st); err != nil {
+			t.Errorf("space_type %q should be accepted: %v", st, err)
+		}
+	}
+	if _, _, err := covSvc.Create("bogus", "novel", "pid_bogus"); err == nil {
+		t.Fatal("expected rejection for space_type=novel")
+	}
+
+	// UnitName round-trips through Get().
+	cov, _, err := covSvc.Create("code project", "code", "pid_code")
+	must(t, err, "create code covenant")
+	reloaded, err := covSvc.Get(cov.CovenantID)
+	must(t, err, "get code covenant")
+	if reloaded.UnitName != "Commit" {
+		t.Errorf("UnitName for code: want Commit, got %q", reloaded.UnitName)
+	}
+}
+
+func TestTokenSnapshotHashOnLock(t *testing.T) {
+	conn, err := db.Open(t.TempDir() + "/snapshot.db")
+	must(t, err, "open db")
+	defer conn.Close()
+
+	covSvc := covenant.New(conn)
+	engine := execution.New(conn, covSvc)
+
+	cov, owner, err := covSvc.Create("Snapshot Test", "book", "pid_snap_owner")
+	must(t, err, "create")
+	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil), "tier")
+	_, err = covSvc.Transition(cov.CovenantID, "OPEN")
+	must(t, err, "→OPEN")
+	ag, err := covSvc.Join(cov.CovenantID, "pid_snap_agent", "contributor")
+	must(t, err, "join")
+	_, err = covSvc.Transition(cov.CovenantID, "ACTIVE")
+	must(t, err, "→ACTIVE")
+	_, err = engine.Run(cov.CovenantID, owner.AgentID, "sess_o",
+		&tools.ApproveAgent{}, map[string]any{"agent_id": ag.AgentID})
+	must(t, err, "approve agent")
+	_, err = engine.Run(cov.CovenantID, ag.AgentID, "sess_a",
+		&tools.ProposePassage{}, map[string]any{"unit_count": 500})
+	must(t, err, "propose")
+	draftID := getDraftID(t, conn, cov.CovenantID, ag.AgentID)
+	_, err = engine.Run(cov.CovenantID, owner.AgentID, "sess_o2",
+		&tools.ApproveDraft{}, map[string]any{"draft_id": draftID, "unit_count": 500, "acceptance_ratio": 1.0})
+	must(t, err, "approve draft")
+
+	// Lock → snapshot rows written.
+	_, err = covSvc.Transition(cov.CovenantID, "LOCKED")
+	must(t, err, "→LOCKED")
+
+	rows, err := conn.Query(`SELECT agent_id, agent_tokens, snapshot_hash FROM token_snapshots WHERE covenant_id=?`, cov.CovenantID)
+	must(t, err, "query snapshots")
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		var agentID, hash string
+		var tokensVal int
+		must(t, rows.Scan(&agentID, &tokensVal, &hash), "scan")
+		if hash == "" {
+			t.Errorf("snapshot_hash empty for agent %s", agentID)
+		}
+		if agentID == ag.AgentID && tokensVal != 500 {
+			t.Errorf("agent tokens: want 500, got %d", tokensVal)
+		}
+		count++
+	}
+	if count == 0 {
+		t.Fatal("expected at least one snapshot row after LOCK")
+	}
+
+	// Tampering with agent_tokens must invalidate the hash.
+	_, err = conn.Exec(`UPDATE token_snapshots SET agent_tokens = agent_tokens + 1 WHERE covenant_id=? AND agent_id=?`,
+		cov.CovenantID, ag.AgentID)
+	must(t, err, "tamper")
+
+	var stored tokens.Snapshot
+	var snapped string
+	err = conn.QueryRow(`SELECT id, covenant_id, agent_id, agent_tokens, cost_tokens, snapped_at, snapshot_hash
+		FROM token_snapshots WHERE covenant_id=? AND agent_id=?`, cov.CovenantID, ag.AgentID,
+	).Scan(&stored.ID, &stored.CovenantID, &stored.AgentID, &stored.AgentTokens,
+		&stored.CostTokens, &snapped, &stored.SnapshotHash)
+	must(t, err, "reread snapshot")
+	stored.SnappedAt, _ = time.Parse(time.RFC3339Nano, snapped)
+	if tokens.VerifySnapshot(stored) {
+		t.Fatal("expected tamper detection: VerifySnapshot returned true after mutation")
+	}
+}
+
+func TestLeaveCovenantBlocksFurtherActions(t *testing.T) {
+	conn, err := db.Open(t.TempDir() + "/leave.db")
+	must(t, err, "open db")
+	defer conn.Close()
+
+	covSvc := covenant.New(conn)
+	engine := execution.New(conn, covSvc)
+
+	cov, owner, err := covSvc.Create("Leave Test", "book", "pid_leave_owner")
+	must(t, err, "create")
+	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil), "tier")
+	_, err = covSvc.Transition(cov.CovenantID, "OPEN")
+	must(t, err, "→OPEN")
+	ag, err := covSvc.Join(cov.CovenantID, "pid_leaver", "contributor")
+	must(t, err, "join")
+	_, err = covSvc.Transition(cov.CovenantID, "ACTIVE")
+	must(t, err, "→ACTIVE")
+	_, err = engine.Run(cov.CovenantID, owner.AgentID, "sess_o",
+		&tools.ApproveAgent{}, map[string]any{"agent_id": ag.AgentID})
+	must(t, err, "approve agent")
+
+	// Earn one confirmed contribution — it must survive the departure.
+	_, err = engine.Run(cov.CovenantID, ag.AgentID, "sess_a",
+		&tools.ProposePassage{}, map[string]any{"unit_count": 200})
+	must(t, err, "propose")
+	draftID := getDraftID(t, conn, cov.CovenantID, ag.AgentID)
+	_, err = engine.Run(cov.CovenantID, owner.AgentID, "sess_o2",
+		&tools.ApproveDraft{}, map[string]any{"draft_id": draftID, "unit_count": 200, "acceptance_ratio": 1.0})
+	must(t, err, "approve draft")
+
+	// Owner cannot leave.
+	if _, err := engine.Run(cov.CovenantID, owner.AgentID, "sess_o_leave",
+		&tools.LeaveCovenant{}, map[string]any{}); err == nil {
+		t.Fatal("owner must not be allowed to leave_covenant")
+	}
+
+	// Contributor leaves.
+	_, err = engine.Run(cov.CovenantID, ag.AgentID, "sess_a2",
+		&tools.LeaveCovenant{}, map[string]any{"reason": "done"})
+	must(t, err, "leave covenant")
+
+	var status string
+	err = conn.QueryRow(`SELECT status FROM covenant_members WHERE covenant_id=? AND agent_id=?`,
+		cov.CovenantID, ag.AgentID).Scan(&status)
+	must(t, err, "read status")
+	if status != "left" {
+		t.Errorf("member status: want left, got %q", status)
+	}
+
+	// Confirmed contribution must still be queryable.
+	bal, err := tokens.Balance(conn, cov.CovenantID, ag.AgentID)
+	must(t, err, "balance")
+	if bal != 200 {
+		t.Errorf("confirmed balance after leave: want 200, got %d", bal)
+	}
+
+	// Further execution is blocked at Step 1.
+	if _, err := engine.Run(cov.CovenantID, ag.AgentID, "sess_a3",
+		&tools.ProposePassage{}, map[string]any{"unit_count": 50}); err == nil {
+		t.Fatal("propose_passage after leave must be blocked")
+	} else if !strings.Contains(err.Error(), "step1.forbidden") {
+		t.Errorf("expected step1.forbidden, got %v", err)
+	}
+}
+
+func TestTokenRuleDrivesApproveDraft(t *testing.T) {
+	conn, err := db.Open(t.TempDir() + "/token_rule.db")
+	must(t, err, "open db")
+	defer conn.Close()
+
+	covSvc := covenant.New(conn)
+	engine := execution.New(conn, covSvc)
+
+	cov, owner, err := covSvc.Create("Rule Test", "book", "pid_rule_owner")
+	must(t, err, "create")
+	// Configure a custom formula BEFORE going OPEN: floor(w/100) * base_rate * tier_multiplier
+	_, err = engine.Run(cov.CovenantID, owner.AgentID, "sess_cfg",
+		&tools.ConfigureTokenRules{}, map[string]any{
+			"rules": []map[string]any{{
+				"tool_name": "propose_passage",
+				"formula":   "floor(word_count / 100) * base_rate * tier_multiplier",
+				"base_rate": 3,
+				"pending":   true,
+			}},
+		})
+	must(t, err, "configure rules")
+
+	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 2.0, nil), "tier")
+	_, err = covSvc.Transition(cov.CovenantID, "OPEN")
+	must(t, err, "→OPEN")
+	ag, err := covSvc.Join(cov.CovenantID, "pid_rule_agent", "contributor")
+	must(t, err, "join")
+	_, err = covSvc.Transition(cov.CovenantID, "ACTIVE")
+	must(t, err, "→ACTIVE")
+	_, err = engine.Run(cov.CovenantID, owner.AgentID, "sess_o",
+		&tools.ApproveAgent{}, map[string]any{"agent_id": ag.AgentID})
+	must(t, err, "approve agent")
+
+	_, err = engine.Run(cov.CovenantID, ag.AgentID, "sess_a",
+		&tools.ProposePassage{}, map[string]any{"unit_count": 1000})
+	must(t, err, "propose")
+	draftID := getDraftID(t, conn, cov.CovenantID, ag.AgentID)
+	receipt, err := engine.Run(cov.CovenantID, owner.AgentID, "sess_o2",
+		&tools.ApproveDraft{}, map[string]any{"draft_id": draftID, "unit_count": 1000, "acceptance_ratio": 1.0})
+	must(t, err, "approve draft")
+
+	// floor(1000/100)=10 × base_rate(3) × tier(2.0) = 60
+	if receipt.TokensAwarded != 60 {
+		t.Errorf("rule-driven tokens: want 60, got %d", receipt.TokensAwarded)
+	}
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────

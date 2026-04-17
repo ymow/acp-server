@@ -66,6 +66,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /tools/configure_token_rules", s.toolHandler(&tools.ConfigureTokenRules{}))
 	s.mux.HandleFunc("POST /tools/approve_agent", s.toolHandler(&tools.ApproveAgent{}))
 	s.mux.HandleFunc("POST /tools/confirm_settlement_output", s.toolHandler(&tools.ConfirmSettlementOutput{}))
+	s.mux.HandleFunc("POST /tools/leave_covenant", s.toolHandler(&tools.LeaveCovenant{}))
 
 	// ── Phase 2 admin tools (X-Owner-Token auth) ─────────────────────────────
 	s.mux.HandleFunc("POST /tools/reject_agent", s.ownerToolHandler(&tools.RejectAgent{}))
@@ -74,6 +75,7 @@ func (s *Server) routes() {
 	// ── Phase 2 query tools ───────────────────────────────────────────────────
 	s.mux.HandleFunc("POST /tools/get_token_balance", s.handleGetTokenBalance)
 	s.mux.HandleFunc("POST /tools/list_members", s.handleListMembers)
+	s.mux.HandleFunc("POST /tools/get_token_history", s.handleGetTokenHistory)
 
 	// ── Audit & verification ─────────────────────────────────────────────────
 	s.mux.HandleFunc("GET /covenants/{covenant_id}/audit/verify", s.handleVerifyChain)
@@ -421,11 +423,114 @@ func (s *Server) handleGetTokenBalance(w http.ResponseWriter, r *http.Request) {
 			rejected = total
 		}
 	}
+	// ACR-20 Part 7: covenant-wide rank by confirmed tokens. Dense rank
+	// (ties share a rank); returned as optional so a zero-balance agent
+	// gets rank=0 rather than pretending to be below the field.
+	var rank int
+	if confirmed > 0 {
+		_ = s.db.QueryRow(`
+			SELECT 1 + COUNT(DISTINCT other.total)
+			FROM (SELECT agent_id, SUM(delta) AS total
+			      FROM token_ledger
+			      WHERE covenant_id=? AND status='confirmed'
+			      GROUP BY agent_id) AS other
+			WHERE other.total > ?`,
+			covenantID, confirmed,
+		).Scan(&rank)
+	}
+
 	jsonOK(w, map[string]any{
 		"confirmed_tokens": confirmed,
 		"pending_tokens":   pending,
 		"rejected_tokens":  rejected,
+		"total_tokens":     confirmed + pending,
+		"rank":             rank,
 	})
+}
+
+// handleGetTokenHistory returns ledger entries for an agent in a covenant.
+// ACR-20 Part 7: optional from/to (ISO 8601) and status filter. Requires a
+// valid X-Session-Token bound to the same agent.
+func (s *Server) handleGetTokenHistory(w http.ResponseWriter, r *http.Request) {
+	sessionToken := r.Header.Get("X-Session-Token")
+	if sessionToken == "" {
+		jsonError(w, "X-Session-Token header required", http.StatusUnauthorized)
+		return
+	}
+	var body struct {
+		Params struct {
+			CovenantID string `json:"covenant_id"`
+			AgentID    string `json:"agent_id"`
+			From       string `json:"from"`
+			To         string `json:"to"`
+			Status     string `json:"status"`
+		} `json:"params"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	p := body.Params
+	if p.CovenantID == "" || p.AgentID == "" {
+		jsonError(w, "covenant_id and agent_id are required", http.StatusBadRequest)
+		return
+	}
+	if valid, _ := sessions.Validate(s.db, sessionToken, p.AgentID, p.CovenantID); !valid {
+		jsonError(w, "invalid or expired session token", http.StatusUnauthorized)
+		return
+	}
+
+	// Join audit_logs for timestamp; token_ledger has no timestamp column.
+	query := `
+		SELECT l.id, l.log_id, l.delta, l.balance_after, l.source_type, l.source_ref, l.status, a.timestamp
+		FROM token_ledger l
+		JOIN audit_logs a ON a.log_id = l.log_id
+		WHERE l.covenant_id=? AND l.agent_id=?`
+	args := []any{p.CovenantID, p.AgentID}
+	if p.Status != "" {
+		query += ` AND l.status=?`
+		args = append(args, p.Status)
+	}
+	if p.From != "" {
+		query += ` AND a.timestamp >= ?`
+		args = append(args, p.From)
+	}
+	if p.To != "" {
+		query += ` AND a.timestamp <= ?`
+		args = append(args, p.To)
+	}
+	query += ` ORDER BY a.timestamp ASC`
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	type entry struct {
+		EntryID      string `json:"entry_id"`
+		LogID        string `json:"log_id"`
+		Delta        int    `json:"tokens_delta"`
+		BalanceAfter int    `json:"balance_after"`
+		SourceType   string `json:"source_type"`
+		SourceRef    string `json:"source_ref"`
+		Status       string `json:"status"`
+		Timestamp    string `json:"timestamp"`
+	}
+	var entries []entry
+	for rows.Next() {
+		var e entry
+		if err := rows.Scan(&e.EntryID, &e.LogID, &e.Delta, &e.BalanceAfter,
+			&e.SourceType, &e.SourceRef, &e.Status, &e.Timestamp); err != nil {
+			jsonError(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		entries = append(entries, e)
+	}
+	if entries == nil {
+		entries = []entry{}
+	}
+	jsonOK(w, map[string]any{"entries": entries, "count": len(entries)})
 }
 
 // handleListMembers returns all covenant members with their token totals.

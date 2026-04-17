@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/inkmesh/acp-server/internal/id"
+	"github.com/inkmesh/acp-server/internal/tokens"
 )
 
 // Valid state transitions.
@@ -20,10 +21,23 @@ var transitions = map[string]string{
 	"LOCKED": "SETTLED",
 }
 
+// ValidSpaceTypes enumerates the SpaceTypes recognised by ACR-20 Part 1.
+// unit_name is the display label returned to callers so clients can render
+// "Ink" vs "Commit" vs "Note" vs "Citation" etc. instead of a generic "token".
+// "custom" leaves unit labelling to the covenant owner's configuration.
+var ValidSpaceTypes = map[string]string{
+	"book":     "Ink",
+	"code":     "Commit",
+	"music":    "Note",
+	"research": "Citation",
+	"custom":   "Token",
+}
+
 type Covenant struct {
 	CovenantID         string    `json:"covenant_id"`
 	Version            string    `json:"version"`
 	SpaceType          string    `json:"space_type"`
+	UnitName           string    `json:"unit_name"` // ACR-20 Part 1: label for tokens in this space (Ink/Commit/Note/…)
 	Title              string    `json:"title"`
 	Description        string    `json:"description"`
 	State              string    `json:"state"`
@@ -56,6 +70,9 @@ func New(db *sql.DB) *Service { return &Service{db: db} }
 
 // Create builds a new Covenant in DRAFT state and registers the owner as a member.
 func (s *Service) Create(title, spaceType, ownerPlatformID string) (*Covenant, *Member, error) {
+	if _, ok := ValidSpaceTypes[spaceType]; !ok {
+		return nil, nil, fmt.Errorf("invalid space_type %q (allowed: book, code, music, research, custom)", spaceType)
+	}
 	now := time.Now().UTC()
 	covenantID := id.Covenant()
 
@@ -102,6 +119,7 @@ func (s *Service) Create(title, spaceType, ownerPlatformID string) (*Covenant, *
 		CovenantID:         covenantID,
 		Version:            "ACP@1.0",
 		SpaceType:          spaceType,
+		UnitName:           ValidSpaceTypes[spaceType],
 		Title:              title,
 		State:              "DRAFT",
 		OwnerID:            agentID,
@@ -162,6 +180,14 @@ func (s *Service) Transition(covenantID, targetState string) (*Covenant, error) 
 		targetState, now.Format(time.RFC3339Nano), covenantID)
 	if err != nil {
 		return nil, err
+	}
+	// ACR-20 Part 5: ACTIVE → LOCKED freezes the token ledger into a hashed
+	// per-agent snapshot. Runs after the state flip so CaptureSnapshot sees
+	// the new state in any concurrent audit.
+	if cov.State == "ACTIVE" && targetState == "LOCKED" {
+		if _, err := tokens.CaptureSnapshot(s.db, covenantID); err != nil {
+			return nil, fmt.Errorf("capture snapshot: %w", err)
+		}
 	}
 	cov.State = targetState
 	cov.UpdatedAt = now
@@ -245,6 +271,11 @@ func (s *Service) Get(covenantID string) (*Covenant, error) {
 	}
 	c.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdStr)
 	c.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedStr)
+	if name, ok := ValidSpaceTypes[c.SpaceType]; ok {
+		c.UnitName = name
+	} else {
+		c.UnitName = "Token"
+	}
 	return c, nil
 }
 

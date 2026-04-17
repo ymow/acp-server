@@ -6,6 +6,7 @@ import (
 
 	"github.com/inkmesh/acp-server/internal/audit"
 	"github.com/inkmesh/acp-server/internal/execution"
+	"github.com/inkmesh/acp-server/internal/tokens"
 )
 
 // ConfigureTokenRules stores token allocation rules for a Covenant in DRAFT state.
@@ -39,6 +40,18 @@ func (t *ConfigureTokenRules) ExecuteLogic(_ *execution.Context, params map[stri
 	rulesJSON, err := json.Marshal(params["rules"])
 	if err != nil {
 		return nil, fmt.Errorf("invalid rules format: %w", err)
+	}
+	// Parse + validate every formula up-front. Catches typos in DRAFT rather
+	// than at the first approve_draft call (which would silently fall back
+	// to the legacy formula and mint the wrong token count).
+	parsed, err := tokens.ParseRules(string(rulesJSON))
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range parsed {
+		if err := tokens.ValidateFormula(r.Formula); err != nil {
+			return nil, fmt.Errorf("rule %q: %w", r.ToolName, err)
+		}
 	}
 	return map[string]any{
 		"rules_json": string(rulesJSON),

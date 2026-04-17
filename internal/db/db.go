@@ -57,6 +57,10 @@ func applyMigrations(db *sql.DB) error {
 		// instead of derived via is_owner=1 lookups. Enables Constitutional
 		// Principle #2 (agent_id vs owner_id separation) and Git Twin mapping.
 		`ALTER TABLE covenants ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''`,
+		// Phase 3.B: snapshot tamper-evidence per ACR-20 Part 5. The hash
+		// covers covenant_id|agent_id|agent_tokens|cost_tokens|snapped_at so
+		// any after-the-fact edit to the token_snapshots row is detectable.
+		`ALTER TABLE token_snapshots ADD COLUMN snapshot_hash TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, stmt := range migrations {
 		if _, err := db.Exec(stmt); err != nil && !isDuplicateColumn(err) {

@@ -150,12 +150,13 @@ CREATE INDEX IF NOT EXISTS idx_session_agent ON session_tokens(agent_id, covenan
 -- ── Token Snapshots (Phase 2 WI5: lock-time snapshot) ─────────────────────
 
 CREATE TABLE IF NOT EXISTS token_snapshots (
-  id           TEXT PRIMARY KEY,
-  covenant_id  TEXT NOT NULL,
-  agent_id     TEXT NOT NULL,
-  agent_tokens INTEGER NOT NULL DEFAULT 0,
-  cost_tokens  INTEGER NOT NULL DEFAULT 0,
-  snapped_at   TEXT NOT NULL,
+  id            TEXT PRIMARY KEY,
+  covenant_id   TEXT NOT NULL,
+  agent_id      TEXT NOT NULL,
+  agent_tokens  INTEGER NOT NULL DEFAULT 0,
+  cost_tokens   INTEGER NOT NULL DEFAULT 0,
+  snapped_at    TEXT NOT NULL,
+  snapshot_hash TEXT NOT NULL DEFAULT '', -- ACR-20 Part 5: SHA-256 tamper-evidence
   FOREIGN KEY (covenant_id) REFERENCES covenants(covenant_id)
 );
 CREATE INDEX IF NOT EXISTS idx_snapshots_covenant ON token_snapshots(covenant_id, agent_id);
