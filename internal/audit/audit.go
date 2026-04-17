@@ -26,8 +26,8 @@ type Entry struct {
 	Result        string
 	ResultDetail  string
 	TokensDelta   int
-	CostDelta     float64
-	NetDelta      float64
+	CostDelta     int64   // USD cents (ACR-300 v0.2)
+	NetDelta      float64 // tokens_delta - cost_weight × cost_delta
 	StateBefore   string
 	StateAfter    string
 	Timestamp     time.Time
@@ -67,7 +67,7 @@ func LogEvent(db *sql.DB, e Entry) (*Entry, error) {
 		e.Timestamp = time.Now().UTC()
 	}
 	if e.SpecVersion == "" {
-		e.SpecVersion = "ACR-300@2.0"
+		e.SpecVersion = "ACR-300@2.1"
 	}
 
 	// Compute params hash + preview
@@ -155,12 +155,24 @@ func VerifyChain(db *sql.DB, covenantID string) (bool, []string) {
 	return len(violations) == 0, violations
 }
 
-// computeHash implements ACR-300 v0.2 formula.
-// All decimal fields use fixed 8-decimal-place format to prevent canonical mismatch.
+// computeHash implements the ACR-300 audit-chain hash. Format depends on
+// spec_version so that a rewritten chain can still verify older rows:
+//
+//   - ACR-300@2.0 — CostDelta formatted %.8f (pre-integer-cents schema).
+//   - ACR-300@2.1 — CostDelta formatted %d (INTEGER cents, current default).
+//
+// NetDelta continues to use %.8f: cost_weight × cost_delta can be fractional
+// even when cost_delta itself is integer.
 func computeHash(e Entry) string {
 	prevPart := "GENESIS"
 	if e.PrevLogID != "" {
 		prevPart = e.PrevLogID
+	}
+	var costField string
+	if e.SpecVersion == "ACR-300@2.0" {
+		costField = fmt.Sprintf("%.8f", float64(e.CostDelta))
+	} else {
+		costField = fmt.Sprintf("%d", e.CostDelta)
 	}
 	components := []string{
 		prevPart,
@@ -171,7 +183,7 @@ func computeHash(e Entry) string {
 		e.ToolName,
 		e.Result,
 		fmt.Sprintf("%d", e.TokensDelta),
-		fmt.Sprintf("%.8f", e.CostDelta),
+		costField,
 		fmt.Sprintf("%.8f", e.NetDelta),
 		e.StateAfter,
 		e.Timestamp.UTC().Format(time.RFC3339Nano),

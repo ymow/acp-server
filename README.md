@@ -37,7 +37,7 @@ Anchor:   settlements/2026-04-15-acp-server-phase1-2.json
 | Dependencies | stdlib only (zero external deps) |
 | DB | SQLite |
 | Auth | `X-Owner-Token` / `X-Session-Token` |
-| Audit | ACR-300 v0.2 hash chain |
+| Audit | ACR-300 v0.2 hash chain (`spec_version=ACR-300@2.1`, integer-cents `cost_delta`) |
 | MCP Transport | JSON-RPC 2.0 over stdio (`cmd/acp-mcp`) |
 
 ---
@@ -121,6 +121,9 @@ Layer 1  Hash Chain (implemented)
          Proves: tamper-evidence
          Trust model: trust the server owner
          Verify: GET /covenants/{id}/audit/verify
+         Chain survives cold cache: budget.RebuildFromAuditLog()
+         reconstructs budget_spent from audit_logs ⟗ token_ledger,
+         refund-aware (per ACP_Implementation_Spec_MVP Part 8).
 
 Layer 2  Git Anchor (Phase 3)
          Settlement hash committed to the repo
@@ -294,6 +297,11 @@ See [ACP_Roadmap.md](https://github.com/ymow/acp-server) for the full Phase 0–
 - Session tokens stored as SHA-256 hashes — raw tokens never persisted
 - Audit log is append-only with hash chain (ACR-300 v0.2) — any tampering breaks the chain
 - Budget gate uses atomic SQLite `UPDATE WHERE remaining >= cost` — no double-spend
+- Budget counter can be rebuilt from the audit log (`budget.RebuildFromAuditLog`) — runtime cache drift is recoverable from durable storage
+- **ParamsPolicy** (ACP Spec v0.2 Part 6): each interface declares
+  `PreviewFields` / `SensitiveFields` / `HashPreviewFields` / `StoreHashOnly`.
+  Raw user content (e.g. draft prose) never lands in `audit_logs.params_preview`;
+  only whitelisted bookkeeping fields do. Mask lengths are rune-aware.
 
 ---
 

@@ -524,7 +524,7 @@ func (s *Server) handleGetAuditLog(w http.ResponseWriter, r *http.Request) {
 		ToolName    string  `json:"tool_name"`
 		Result      string  `json:"result"`
 		TokensDelta int     `json:"tokens_delta"`
-		CostDelta   float64 `json:"cost_delta"`
+		CostDelta   int64   `json:"cost_delta"` // USD cents
 		NetDelta    float64 `json:"net_delta"`
 		StateBefore string  `json:"state_before"`
 		StateAfter  string  `json:"state_after"`
@@ -567,7 +567,7 @@ func (s *Server) handleSetBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		BudgetLimit float64 `json:"budget_limit"`
+		BudgetLimit int64 `json:"budget_limit"` // USD cents
 	}
 	if !decode(w, r, &req) {
 		return

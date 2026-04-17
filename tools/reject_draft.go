@@ -15,6 +15,13 @@ type RejectDraft struct{}
 func (t *RejectDraft) ToolName() string { return "reject_draft" }
 func (t *RejectDraft) ToolType() string { return "admin" }
 
+// ParamsPolicy: log_id + human reason are both safe to retain verbatim.
+func (t *RejectDraft) ParamsPolicy() execution.ParamsPolicy {
+	return execution.ParamsPolicy{
+		PreviewFields: []string{"log_id", "reason"},
+	}
+}
+
 func (t *RejectDraft) CheckPreconditions(ctx *execution.Context, params map[string]any) error {
 	if !ctx.Member.IsOwner {
 		return fmt.Errorf("only covenant owner can reject drafts")
@@ -38,7 +45,7 @@ func (t *RejectDraft) CheckPreconditions(ctx *execution.Context, params map[stri
 	return nil
 }
 
-func (t *RejectDraft) EstimateCost(_ *execution.Context, _ map[string]any) float64 { return 0 }
+func (t *RejectDraft) EstimateCost(_ *execution.Context, _ map[string]any) int64 { return 0 }
 
 func (t *RejectDraft) ExecuteLogic(ctx *execution.Context, params map[string]any) (map[string]any, error) {
 	logID, _ := params["log_id"].(string)
@@ -54,7 +61,7 @@ func (t *RejectDraft) ExecuteLogic(ctx *execution.Context, params map[string]any
 		return nil, fmt.Errorf("reading token_ledger: %w", err)
 	}
 
-	var costDelta float64
+	var costDelta int64
 	_ = ctx.DB.QueryRow(
 		`SELECT cost_delta FROM audit_logs WHERE log_id=?`, logID,
 	).Scan(&costDelta)
@@ -76,7 +83,7 @@ func (t *RejectDraft) CalculateSideEffects(ctx *execution.Context, _ map[string]
 
 func (t *RejectDraft) ApplySideEffects(ctx *execution.Context, _ *audit.Entry, _ execution.SideEffects, result map[string]any, _ map[string]any) error {
 	logID, _ := result["log_id"].(string)
-	costDelta, _ := result["cost_returned"].(float64)
+	costDelta, _ := result["cost_returned"].(int64)
 
 	_, err := ctx.DB.Exec(
 		`UPDATE token_ledger SET status='rejected' WHERE log_id=? AND covenant_id=?`,

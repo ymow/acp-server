@@ -12,9 +12,11 @@ import (
 )
 
 // SideEffects carries the computed outputs of Step 4.
+// CostDelta is USD cents; NetDelta stays float because cost_weight is a
+// real-number multiplier.
 type SideEffects struct {
 	TokensDelta int
-	CostDelta   float64
+	CostDelta   int64
 	NetDelta    float64
 	StateAfter  string
 }
@@ -27,7 +29,7 @@ type Receipt struct {
 	ToolName      string         `json:"tool_name"`
 	Status        string         `json:"status"`
 	TokensAwarded int            `json:"tokens_awarded"`
-	CostDelta     float64        `json:"cost_delta"`
+	CostDelta     int64          `json:"cost_delta"` // USD cents
 	NetDelta      float64        `json:"net_delta"`
 	Timestamp     string         `json:"timestamp"`
 	LogHash       string         `json:"log_hash"`
@@ -50,8 +52,8 @@ type Tool interface {
 	// Step 2: additional precondition checks (identity already verified by engine)
 	CheckPreconditions(ctx *Context, params map[string]any) error
 
-	// Step 2.5: estimated cost for budget gate; return 0 to skip
-	EstimateCost(ctx *Context, params map[string]any) float64
+	// Step 2.5: estimated cost for budget gate (USD cents); return 0 to skip.
+	EstimateCost(ctx *Context, params map[string]any) int64
 
 	// Step 3: execute core logic, return result data
 	ExecuteLogic(ctx *Context, params map[string]any) (map[string]any, error)
@@ -64,6 +66,21 @@ type Tool interface {
 
 	// Step 8: enrich the receipt (optional extra fields)
 	EnrichReceipt(receipt *Receipt, result map[string]any)
+}
+
+// PolicyAwareTool is optionally implemented by tools that want to override
+// the default params-preview masking. The engine prefers this over the
+// legacy DefaultParamsPolicy() when a tool implements it.
+type PolicyAwareTool interface {
+	ParamsPolicy() ParamsPolicy
+}
+
+// resolvePolicy returns the tool's declared ParamsPolicy or the default.
+func resolvePolicy(tool Tool) ParamsPolicy {
+	if p, ok := tool.(PolicyAwareTool); ok {
+		return p.ParamsPolicy()
+	}
+	return DefaultParamsPolicy()
 }
 
 // Engine runs the eight-step ACP execution flow.
@@ -127,10 +144,10 @@ func (e *Engine) Run(covenantID, agentID, sessionID string, tool Tool, params ma
 	if effects.CostDelta == 0 && estimated > 0 {
 		effects.CostDelta = estimated
 	}
-	effects.NetDelta = float64(effects.TokensDelta) - cov.CostWeight*effects.CostDelta
+	effects.NetDelta = float64(effects.TokensDelta) - cov.CostWeight*float64(effects.CostDelta)
 
 	// ── Step 5: Write Audit Log  ← MUST precede Step 6 ───────────────────
-	maskedParams := maskSensitive(params)
+	maskedParams := ApplyParamsPolicy(params, resolvePolicy(tool))
 	logEntry, err := audit.LogEvent(e.db, audit.Entry{
 		CovenantID:    covenantID,
 		AgentID:       agentID,
@@ -191,32 +208,12 @@ func (e *Engine) logRejection(covenantID, agentID, sessionID string, tool Tool, 
 		SessionID:     sessionID,
 		ToolName:      tool.ToolName(),
 		ToolType:      tool.ToolType(),
-		ParamsPreview: maskSensitive(params),
+		ParamsPreview: ApplyParamsPolicy(params, resolvePolicy(tool)),
 		Result:        "rejected",
 		ResultDetail:  reason,
 		StateBefore:   state,
 		StateAfter:    state,
 	})
-}
-
-func maskSensitive(params map[string]any) map[string]any {
-	sensitive := map[string]bool{"content": true, "text": true, "draft": true, "password": true}
-	out := map[string]any{}
-	for k, v := range params {
-		if sensitive[k] {
-			out[k] = fmt.Sprintf("*** (length: %d)", len(fmt.Sprint(v)))
-		} else if k == "content_hash" {
-			s := fmt.Sprint(v)
-			if len(s) > 8 {
-				out[k] = s[:8] + "..."
-			} else {
-				out[k] = s
-			}
-		} else {
-			out[k] = v
-		}
-	}
-	return out
 }
 
 func strVal(m map[string]any, key string) string {

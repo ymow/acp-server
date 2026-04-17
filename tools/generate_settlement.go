@@ -14,6 +14,12 @@ type GenerateSettlement struct{}
 func (t *GenerateSettlement) ToolName() string { return "generate_settlement_output" }
 func (t *GenerateSettlement) ToolType() string { return "admin" }
 
+// ParamsPolicy: settlement takes no user-supplied params; default masking
+// for the common sensitive field names is sufficient.
+func (t *GenerateSettlement) ParamsPolicy() execution.ParamsPolicy {
+	return execution.DefaultParamsPolicy()
+}
+
 func (t *GenerateSettlement) CheckPreconditions(ctx *execution.Context, _ map[string]any) error {
 	if !ctx.Member.IsOwner {
 		return fmt.Errorf("only covenant owner can trigger settlement")
@@ -24,7 +30,7 @@ func (t *GenerateSettlement) CheckPreconditions(ctx *execution.Context, _ map[st
 	return nil
 }
 
-func (t *GenerateSettlement) EstimateCost(_ *execution.Context, _ map[string]any) float64 { return 20 }
+func (t *GenerateSettlement) EstimateCost(_ *execution.Context, _ map[string]any) int64 { return 20 }
 
 func (t *GenerateSettlement) ExecuteLogic(_ *execution.Context, _ map[string]any) (map[string]any, error) {
 	return map[string]any{

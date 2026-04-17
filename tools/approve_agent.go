@@ -15,6 +15,13 @@ type ApproveAgent struct{}
 func (t *ApproveAgent) ToolName() string { return "approve_agent" }
 func (t *ApproveAgent) ToolType() string { return "admin" }
 
+// ParamsPolicy: only agent_id is relevant for audit.
+func (t *ApproveAgent) ParamsPolicy() execution.ParamsPolicy {
+	return execution.ParamsPolicy{
+		PreviewFields: []string{"agent_id"},
+	}
+}
+
 func (t *ApproveAgent) CheckPreconditions(ctx *execution.Context, params map[string]any) error {
 	if !ctx.Member.IsOwner {
 		return fmt.Errorf("only covenant owner can approve agents")
@@ -38,7 +45,7 @@ func (t *ApproveAgent) CheckPreconditions(ctx *execution.Context, params map[str
 	return nil
 }
 
-func (t *ApproveAgent) EstimateCost(_ *execution.Context, _ map[string]any) float64 { return 0 }
+func (t *ApproveAgent) EstimateCost(_ *execution.Context, _ map[string]any) int64 { return 0 }
 
 func (t *ApproveAgent) ExecuteLogic(_ *execution.Context, params map[string]any) (map[string]any, error) {
 	agentID, _ := params["agent_id"].(string)

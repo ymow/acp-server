@@ -1,5 +1,7 @@
 // Package budget implements ACR-60 MVP: global budget gate with authorize-then-settle.
 // Phase 2 WI6 (Option A): CheckAndReserve checks only (no deduction); RecordSpend settles.
+//
+// All monetary values are USD cents (int64) per ACR-300 v0.2.
 package budget
 
 import (
@@ -12,19 +14,21 @@ import (
 
 type State struct {
 	CovenantID  string
-	BudgetLimit float64
-	BudgetSpent float64
+	BudgetLimit int64 // USD cents
+	BudgetSpent int64 // USD cents
 }
 
-func (s State) Remaining() float64 {
+// Remaining returns cents left in the budget, or -1 when unlimited.
+func (s State) Remaining() int64 {
 	if s.BudgetLimit == 0 {
-		return -1 // unlimited
+		return -1
 	}
 	return s.BudgetLimit - s.BudgetSpent
 }
 
 // EnsureCounter creates a budget_counter row if one doesn't exist yet.
-func EnsureCounter(db *sql.DB, covenantID string, limit float64) error {
+// limit is USD cents; 0 means unlimited.
+func EnsureCounter(db *sql.DB, covenantID string, limit int64) error {
 	_, err := db.Exec(`
 		INSERT OR IGNORE INTO budget_counters (covenant_id, budget_limit, budget_spent, updated_at)
 		VALUES (?, ?, 0, ?)`,
@@ -36,7 +40,7 @@ func EnsureCounter(db *sql.DB, covenantID string, limit float64) error {
 // CheckAndReserve checks whether sufficient budget remains for estimatedCost.
 // Phase 2 WI6 (Option A): does NOT deduct from budget_counters; creates a reservation record.
 // Returns (reservationID, error). reservationID is "" when estimatedCost <= 0 or no counter exists.
-func CheckAndReserve(db *sql.DB, covenantID string, estimatedCost float64) (string, error) {
+func CheckAndReserve(db *sql.DB, covenantID string, estimatedCost int64) (string, error) {
 	if estimatedCost <= 0 {
 		return "", nil
 	}
@@ -48,7 +52,7 @@ func CheckAndReserve(db *sql.DB, covenantID string, estimatedCost float64) (stri
 	defer tx.Rollback()
 
 	// Check remaining budget
-	var limit, spent float64
+	var limit, spent int64
 	err = tx.QueryRow(`SELECT budget_limit, budget_spent FROM budget_counters WHERE covenant_id = ?`,
 		covenantID).Scan(&limit, &spent)
 	if err == sql.ErrNoRows {
@@ -62,7 +66,7 @@ func CheckAndReserve(db *sql.DB, covenantID string, estimatedCost float64) (stri
 		return "", err
 	}
 	if limit > 0 && (limit-spent) < estimatedCost {
-		return "", fmt.Errorf("budget exhausted: remaining=%.8f required=%.8f", limit-spent, estimatedCost)
+		return "", fmt.Errorf("budget exhausted: remaining=%d required=%d (cents)", limit-spent, estimatedCost)
 	}
 
 	// Create reservation record (audit_log_id filled in later by RecordSpend)
@@ -86,7 +90,7 @@ func CheckAndReserve(db *sql.DB, covenantID string, estimatedCost float64) (stri
 // RecordSpend deducts estimatedCost from budget_counters and settles the reservation.
 // Phase 2 WI6: this is the actual deduction point (replaces CheckAndReserve's old role).
 // auditLogID is stored in the reservation for traceability.
-func RecordSpend(db *sql.DB, covenantID string, estimatedCost float64, reservationID, auditLogID string) error {
+func RecordSpend(db *sql.DB, covenantID string, estimatedCost int64, reservationID, auditLogID string) error {
 	if estimatedCost <= 0 {
 		return nil
 	}
@@ -112,7 +116,7 @@ func RecordSpend(db *sql.DB, covenantID string, estimatedCost float64, reservati
 }
 
 // Release decrements budget_spent by amount (used by reject_draft to refund a settled spend).
-func Release(db *sql.DB, covenantID string, amount float64) error {
+func Release(db *sql.DB, covenantID string, amount int64) error {
 	if amount <= 0 {
 		return nil
 	}
@@ -158,11 +162,11 @@ func GetState(db *sql.DB, covenantID string) (State, error) {
 // own cost_delta=0 success entry rather than as a negative cost_delta on
 // the original row.
 //
-// Returns the reconstructed budget_spent total. Errors if the covenant has
-// no budget_counter row (caller must EnsureCounter first) — a missing row
-// signals misuse, not zero spend.
-func RebuildFromAuditLog(db *sql.DB, covenantID string) (float64, error) {
-	var total float64
+// Returns the reconstructed budget_spent total (USD cents). Errors if the
+// covenant has no budget_counter row (caller must EnsureCounter first) — a
+// missing row signals misuse, not zero spend.
+func RebuildFromAuditLog(db *sql.DB, covenantID string) (int64, error) {
+	var total int64
 	err := db.QueryRow(`
 		SELECT COALESCE(SUM(a.cost_delta), 0)
 		FROM audit_logs a

@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS covenants (
     owner_share_pct REAL NOT NULL DEFAULT 30.0,
     platform_share_pct REAL NOT NULL DEFAULT 0.0,
     contributor_pool_pct REAL NOT NULL DEFAULT 70.0,
-    budget_limit    REAL NOT NULL DEFAULT 0,  -- 0 = unlimited
+    budget_limit    INTEGER NOT NULL DEFAULT 0,  -- USD cents; 0 = unlimited (ACR-300 v0.2)
     cost_weight     REAL NOT NULL DEFAULT 1.0, -- ACR-20 §6: net_delta = tokens_delta - cost_weight × cost_delta
     owner_token     TEXT NOT NULL DEFAULT '', -- A-2: bearer token for owner-only operations
     token_rules_json TEXT NOT NULL DEFAULT '', -- JSON array of TokenRule objects
@@ -68,14 +68,14 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     result       TEXT NOT NULL,               -- success | rejected | error
     result_detail TEXT NOT NULL DEFAULT '',
     tokens_delta INTEGER NOT NULL DEFAULT 0,
-    cost_delta   REAL NOT NULL DEFAULT 0,     -- ACR-300 v0.2
-    net_delta    REAL NOT NULL DEFAULT 0,     -- ACR-300 v0.2
+    cost_delta   INTEGER NOT NULL DEFAULT 0,  -- USD cents (ACR-300 v0.2)
+    net_delta    REAL NOT NULL DEFAULT 0,     -- cost_weight × cost_delta may be fractional
     state_before TEXT NOT NULL,
     state_after  TEXT NOT NULL,
     timestamp    TEXT NOT NULL,               -- RFC3339 UTC
     prev_log_id  TEXT,                        -- NULL for genesis
     hash         TEXT NOT NULL,               -- SHA-256 chain hash
-    spec_version TEXT NOT NULL DEFAULT 'ACR-300@2.0',
+    spec_version TEXT NOT NULL DEFAULT 'ACR-300@2.1',
     UNIQUE(covenant_id, sequence)
 );
 CREATE INDEX IF NOT EXISTS idx_audit_covenant ON audit_logs(covenant_id, sequence);
@@ -107,8 +107,8 @@ CREATE TABLE IF NOT EXISTS pending_tokens (
 
 CREATE TABLE IF NOT EXISTS budget_counters (
     covenant_id    TEXT PRIMARY KEY,
-    budget_limit   REAL NOT NULL DEFAULT 0,   -- 0 = unlimited
-    budget_spent   REAL NOT NULL DEFAULT 0,
+    budget_limit   INTEGER NOT NULL DEFAULT 0,  -- USD cents; 0 = unlimited
+    budget_spent   INTEGER NOT NULL DEFAULT 0,  -- USD cents
     updated_at     TEXT NOT NULL
 );
 
@@ -162,7 +162,7 @@ CREATE TABLE IF NOT EXISTS budget_reservations (
   id           TEXT PRIMARY KEY,
   covenant_id  TEXT NOT NULL,
   audit_log_id TEXT NOT NULL DEFAULT '',
-  amount       REAL NOT NULL,
+  amount       INTEGER NOT NULL,  -- USD cents
   status       TEXT NOT NULL DEFAULT 'reserved',  -- reserved | settled | released
   created_at   TEXT NOT NULL
 );

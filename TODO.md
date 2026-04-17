@@ -34,23 +34,28 @@ tickets or fixed.
 ### cost_delta values are placeholder constants, not real external spend
 - **Spec:** `ACR-300_Audit_Log_v0.2.md:85` — "呼叫外部 API 花費 USD 0.05 →
   cost_delta = 5" (INTEGER cents, represents actual x402 / API payment).
-- **Current state:** Every tool's `EstimateCost` returns a hardcoded constant
-  (`propose_passage`=10, `approve_draft`=5, `generate_settlement`=20). Local
-  SQLite operations with zero external spend are nonetheless charged.
-  `cost_delta` is also `REAL` instead of the spec's `INTEGER cents`.
-- **Why deferred:** real cost wiring requires the x402 integration
-  (see below). Zeroing the placeholders would disable budget-gate coverage
-  in tests. The Apr-17 commit (`ec5e6ca`) made sure whatever value
-  `EstimateCost` returns now flows through `audit_logs.cost_delta` and
-  `net_delta` correctly, which was the more urgent bug.
-- **Fix sketch:**
-  1. Change schema column type `cost_delta REAL` → `cost_delta INTEGER`
-     (cents) — spec alignment + eliminates float rounding.
-  2. Make `EstimateCost` param-aware: accept `cost_cents` in params
+- **Partially resolved (schema + types):** cost is now INTEGER cents
+  end-to-end. Schema columns `audit_logs.cost_delta`,
+  `covenants.budget_limit`, `budget_counters.budget_limit/spent`, and
+  `budget_reservations.amount` are all `INTEGER`. Go types:
+  `execution.SideEffects.CostDelta`, `execution.Receipt.CostDelta`,
+  `audit.Entry.CostDelta`, `budget.State.Budget{Limit,Spent}`,
+  `covenant.Covenant.BudgetLimit` are `int64`. `EstimateCost` returns
+  `int64`. `NetDelta` stays `float64` because `cost_weight × cost_delta`
+  can be fractional.
+- **Hash chain impact:** `audit.computeHash` branches on `spec_version`
+  — rows stamped `ACR-300@2.0` still format cost as `%.8f` (historical
+  compatibility); new rows stamp `ACR-300@2.1` and format cost as `%d`.
+  `VerifyChain` handles both. Schema default bumped to 2.1.
+- **Still placeholder-valued:** `EstimateCost` returns hardcoded cents
+  (`propose_passage`=10, `approve_draft`=5, `generate_settlement`=20);
+  no real external spend yet. Unlocking real values needs x402 (below).
+- **Remaining fix sketch:**
+  1. Make `EstimateCost` param-aware: accept `cost_cents` in params
      (declared external spend) defaulting to 0.
-  3. For local-only tools, hard-code `return 0` and cover the budget gate
+  2. For local-only tools, hard-code `return 0` and cover the budget gate
      in tests via a synthetic "paid_tool" fixture.
-  4. When x402 lands, populate `cost_cents` from the actual payment
+  3. When x402 lands, populate `cost_cents` from the actual payment
      receipt in Step 3.
 
 ### No budget counter rebuild from audit_log — DONE
@@ -72,14 +77,27 @@ tickets or fixed.
 
 ## Identity & Policy
 
-### ParamsPolicy is ad-hoc masking
+### ParamsPolicy is ad-hoc masking — DONE
 - **Spec:** `ACP_Covenant_Spec_v0.2_EN.md` Part 6 — `ParamsPolicy` struct
-  with `store_hash_only` / `preview_fields`.
-- **Current state:** `internal/execution/execution.go:194-212` — inline
-  `maskSensitive()` with hardcoded field list (`content`, `text`, `draft`,
-  `password`).
-- **Fix sketch:** per-tool `ParamsPolicy` declaration; engine reads
-  policy and applies masking uniformly.
+  with `store_hash_only` / `preview_fields` / `sensitive_fields`.
+- **Resolved:** `internal/execution/policy.go` defines `ParamsPolicy` +
+  `ApplyParamsPolicy`. Tools optionally implement `PolicyAwareTool` to
+  declare their policy; the engine resolves per-call via `resolvePolicy()`.
+  `maskSensitive()` has been removed; rejection-path logging now uses the
+  same policy as success-path.
+- **Semantics:** whitelist (`PreviewFields`) drops non-listed keys;
+  blacklist (`SensitiveFields`) masks values as `*** (length: N)` with
+  rune-aware length (fixes prior byte-length bug for CJK text); hash
+  fields (`HashPreviewFields`) truncate to first 8 runes + `...`;
+  `StoreHashOnly` emits a single deterministic sha256 of canonical JSON.
+- **Per-tool policies:** propose_passage (whitelist bookkeeping + hash
+  preview), approve_draft (whitelist log/draft ids + metrics), reject_draft
+  (log_id + reason), approve_agent / reject_agent (agent_id + reason),
+  confirm_settlement_output (output_id), generate_settlement /
+  configure_token_rules (Default policy — rules tree is audit-worthy).
+- **Tests:** `policy_test.go` covers whitelist, sensitive mask, rune
+  length, hash preview, stacked policies, StoreHashOnly determinism,
+  input immutability, default legacy behaviour.
 
 ---
 

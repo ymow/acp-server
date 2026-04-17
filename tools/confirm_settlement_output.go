@@ -15,6 +15,13 @@ type ConfirmSettlementOutput struct{}
 func (t *ConfirmSettlementOutput) ToolName() string { return "confirm_settlement_output" }
 func (t *ConfirmSettlementOutput) ToolType() string { return "admin" }
 
+// ParamsPolicy: only the output ID is relevant for audit.
+func (t *ConfirmSettlementOutput) ParamsPolicy() execution.ParamsPolicy {
+	return execution.ParamsPolicy{
+		PreviewFields: []string{"settlement_output_id"},
+	}
+}
+
 func (t *ConfirmSettlementOutput) CheckPreconditions(ctx *execution.Context, params map[string]any) error {
 	if !ctx.Member.IsOwner {
 		return fmt.Errorf("only covenant owner can confirm settlement output")
@@ -41,7 +48,7 @@ func (t *ConfirmSettlementOutput) CheckPreconditions(ctx *execution.Context, par
 	return nil
 }
 
-func (t *ConfirmSettlementOutput) EstimateCost(_ *execution.Context, _ map[string]any) float64 {
+func (t *ConfirmSettlementOutput) EstimateCost(_ *execution.Context, _ map[string]any) int64 {
 	return 0
 }
 

@@ -14,6 +14,14 @@ type ApproveDraft struct{}
 func (t *ApproveDraft) ToolName() string { return "approve_draft" }
 func (t *ApproveDraft) ToolType() string { return "clause" }
 
+// ParamsPolicy: approve_draft callers sometimes pass the full draft text for
+// verification. Whitelist only the bookkeeping fields; drop anything else.
+func (t *ApproveDraft) ParamsPolicy() execution.ParamsPolicy {
+	return execution.ParamsPolicy{
+		PreviewFields: []string{"log_id", "draft_id", "word_count", "acceptance_ratio"},
+	}
+}
+
 func (t *ApproveDraft) CheckPreconditions(ctx *execution.Context, params map[string]any) error {
 	if ctx.Covenant.State != "ACTIVE" {
 		return fmt.Errorf("covenant must be ACTIVE, currently %s", ctx.Covenant.State)
@@ -29,7 +37,7 @@ func (t *ApproveDraft) CheckPreconditions(ctx *execution.Context, params map[str
 	return nil
 }
 
-func (t *ApproveDraft) EstimateCost(_ *execution.Context, _ map[string]any) float64 { return 5 }
+func (t *ApproveDraft) EstimateCost(_ *execution.Context, _ map[string]any) int64 { return 5 }
 
 func (t *ApproveDraft) ExecuteLogic(ctx *execution.Context, params map[string]any) (map[string]any, error) {
 	logID, _ := params["log_id"].(string)

@@ -30,7 +30,7 @@ type Covenant struct {
 	OwnerSharePct      float64   `json:"owner_share_pct"`
 	PlatformSharePct   float64   `json:"platform_share_pct"`
 	ContributorPoolPct float64   `json:"contributor_pool_pct"`
-	BudgetLimit        float64   `json:"budget_limit"`
+	BudgetLimit        int64     `json:"budget_limit"` // USD cents
 	CostWeight         float64   `json:"cost_weight"` // ACR-20 §6: net_delta = tokens_delta - cost_weight × cost_delta
 	// OwnerToken is populated only in the Create response (shown once, never again).
 	OwnerToken string    `json:"owner_token,omitempty"`

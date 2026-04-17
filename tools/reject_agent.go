@@ -14,6 +14,13 @@ type RejectAgent struct{}
 func (t *RejectAgent) ToolName() string { return "reject_agent" }
 func (t *RejectAgent) ToolType() string { return "admin" }
 
+// ParamsPolicy: agent_id + human reason are both safe for audit.
+func (t *RejectAgent) ParamsPolicy() execution.ParamsPolicy {
+	return execution.ParamsPolicy{
+		PreviewFields: []string{"agent_id", "reason"},
+	}
+}
+
 func (t *RejectAgent) CheckPreconditions(ctx *execution.Context, params map[string]any) error {
 	if !ctx.Member.IsOwner {
 		return fmt.Errorf("only covenant owner can reject agents")
@@ -36,7 +43,7 @@ func (t *RejectAgent) CheckPreconditions(ctx *execution.Context, params map[stri
 	return nil
 }
 
-func (t *RejectAgent) EstimateCost(_ *execution.Context, _ map[string]any) float64 { return 0 }
+func (t *RejectAgent) EstimateCost(_ *execution.Context, _ map[string]any) int64 { return 0 }
 
 func (t *RejectAgent) ExecuteLogic(_ *execution.Context, params map[string]any) (map[string]any, error) {
 	agentID, _ := params["agent_id"].(string)

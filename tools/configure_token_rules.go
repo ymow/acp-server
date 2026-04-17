@@ -15,6 +15,13 @@ type ConfigureTokenRules struct{}
 func (t *ConfigureTokenRules) ToolName() string { return "configure_token_rules" }
 func (t *ConfigureTokenRules) ToolType() string { return "admin" }
 
+// ParamsPolicy: the rules tree itself IS the audit-worthy content here.
+// Pass it through verbatim (default masking handles the historical field
+// names for defense-in-depth).
+func (t *ConfigureTokenRules) ParamsPolicy() execution.ParamsPolicy {
+	return execution.DefaultParamsPolicy()
+}
+
 func (t *ConfigureTokenRules) CheckPreconditions(ctx *execution.Context, params map[string]any) error {
 	if !ctx.Member.IsOwner {
 		return fmt.Errorf("only covenant owner can configure token rules")
@@ -28,7 +35,7 @@ func (t *ConfigureTokenRules) CheckPreconditions(ctx *execution.Context, params 
 	return nil
 }
 
-func (t *ConfigureTokenRules) EstimateCost(_ *execution.Context, _ map[string]any) float64 { return 0 }
+func (t *ConfigureTokenRules) EstimateCost(_ *execution.Context, _ map[string]any) int64 { return 0 }
 
 func (t *ConfigureTokenRules) ExecuteLogic(_ *execution.Context, params map[string]any) (map[string]any, error) {
 	rulesJSON, err := json.Marshal(params["rules"])

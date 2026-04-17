@@ -128,7 +128,7 @@ func TestMVPAcceptanceCriteria(t *testing.T) {
 		// AC-5: Global budget correctly deducted (no cost in this test, but counter exists)
 		budState, err := budget.GetState(conn, cov.CovenantID)
 		must(t, err, "budget state")
-		t.Logf("✓ AC-5  budget_limit=%.2f budget_spent=%.2f", budState.BudgetLimit, budState.BudgetSpent)
+		t.Logf("✓ AC-5  budget_limit=%d budget_spent=%d (cents)", budState.BudgetLimit, budState.BudgetSpent)
 
 		// AC-6: Audit log can reconstruct token totals
 		balA, _ := tokens.Balance(conn, cov.CovenantID, agent1.AgentID)
