@@ -46,8 +46,15 @@ tickets or fixed.
 - **Currency (Path A):** `audit_logs.cost_currency TEXT NOT NULL DEFAULT 'USD'`
   added to the schema + migration. `audit.Entry.CostCurrency`,
   `execution.SideEffects.CostCurrency`, `execution.Receipt.CostCurrency`
-  default to `"USD"` when unset. Budget tables still assume a single
-  covenant currency — multi-currency budget enforcement is deferred.
+  default to `"USD"` when unset.
+- **Currency (Phase 3.0 follow-up):** propagated to the budget layer.
+  `covenants.budget_currency` is the authoritative single-currency contract
+  per covenant; `budget_counters.currency` mirrors it. `execution.Run` Step 4
+  rejects any charge whose `cost_currency` does not match the covenant's
+  `budget_currency`, releasing the Step 2.5 reservation and logging a rejection
+  — so budget package internals can assume uniform currency and never mix
+  USD cents with EUR cents. Multi-currency per covenant is still out of scope
+  (would need a currency-aware ledger, deferred to Phase 7 with x402).
 - **Hash chain impact:** `audit.computeHash` branches on `spec_version`
   — 2.0 rows keep `%.8f` cost, 2.1 rows use `%d` cost with no currency
   in the payload, 2.2 rows include `cost_currency` as a hash component
