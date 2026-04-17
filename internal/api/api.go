@@ -244,6 +244,7 @@ func (s *Server) handleGetState(w http.ResponseWriter, r *http.Request) {
 		"limit":     budState.BudgetLimit,
 		"spent":     budState.BudgetSpent,
 		"remaining": budState.Remaining(),
+		"currency":  budState.Currency,
 	}
 
 	jsonOK(w, state)
@@ -568,16 +569,20 @@ func (s *Server) handleSetBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		BudgetLimit int64 `json:"budget_limit"` // USD cents
+		BudgetLimit int64  `json:"budget_limit"` // minor units of Currency
+		Currency    string `json:"currency"`     // ISO 4217; defaults to "USD" when empty
 	}
 	if !decode(w, r, &req) {
 		return
 	}
-	if err := budget.EnsureCounter(s.db, covenantID, req.BudgetLimit); err != nil {
+	if req.Currency == "" {
+		req.Currency = "USD"
+	}
+	if err := budget.EnsureCounter(s.db, covenantID, req.BudgetLimit, req.Currency); err != nil {
 		jsonError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	jsonOK(w, map[string]any{"ok": true, "budget_limit": req.BudgetLimit})
+	jsonOK(w, map[string]any{"ok": true, "budget_limit": req.BudgetLimit, "currency": req.Currency})
 }
 
 // ── Session token handlers ────────────────────────────────────────────────────

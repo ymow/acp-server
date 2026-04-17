@@ -1,7 +1,9 @@
 // Package budget implements ACR-60 MVP: global budget gate with authorize-then-settle.
 // Phase 2 WI6 (Option A): CheckAndReserve checks only (no deduction); RecordSpend settles.
 //
-// All monetary values are USD cents (int64) per ACR-300 v0.2.
+// All monetary values are minor units (int64) of State.Currency (ISO 4217).
+// execution.Run enforces that a charge's cost_currency matches the covenant's
+// budget_currency — this package never has to mix currencies internally.
 package budget
 
 import (
@@ -14,11 +16,12 @@ import (
 
 type State struct {
 	CovenantID  string
-	BudgetLimit int64 // USD cents
-	BudgetSpent int64 // USD cents
+	BudgetLimit int64  // minor units of Currency
+	BudgetSpent int64  // minor units of Currency
+	Currency    string // ISO 4217, mirrors covenants.budget_currency
 }
 
-// Remaining returns cents left in the budget, or -1 when unlimited.
+// Remaining returns minor units left in the budget, or -1 when unlimited.
 func (s State) Remaining() int64 {
 	if s.BudgetLimit == 0 {
 		return -1
@@ -26,13 +29,18 @@ func (s State) Remaining() int64 {
 	return s.BudgetLimit - s.BudgetSpent
 }
 
-// EnsureCounter creates a budget_counter row if one doesn't exist yet.
-// limit is USD cents; 0 means unlimited.
-func EnsureCounter(db *sql.DB, covenantID string, limit int64) error {
+// EnsureCounter creates (or idempotently resets) a budget_counter row.
+// limit is in minor units of currency; 0 means unlimited. currency defaults
+// to "USD" when empty. Calling EnsureCounter with a different currency on an
+// existing row is a no-op — change the covenant's budget_currency instead.
+func EnsureCounter(db *sql.DB, covenantID string, limit int64, currency string) error {
+	if currency == "" {
+		currency = "USD"
+	}
 	_, err := db.Exec(`
-		INSERT OR IGNORE INTO budget_counters (covenant_id, budget_limit, budget_spent, updated_at)
-		VALUES (?, ?, 0, ?)`,
-		covenantID, limit, time.Now().UTC().Format(time.RFC3339Nano),
+		INSERT OR IGNORE INTO budget_counters (covenant_id, budget_limit, budget_spent, currency, updated_at)
+		VALUES (?, ?, 0, ?, ?)`,
+		covenantID, limit, currency, time.Now().UTC().Format(time.RFC3339Nano),
 	)
 	return err
 }
@@ -142,8 +150,8 @@ func ReleaseReservation(db *sql.DB, reservationID string) {
 func GetState(db *sql.DB, covenantID string) (State, error) {
 	var s State
 	s.CovenantID = covenantID
-	err := db.QueryRow(`SELECT budget_limit, budget_spent FROM budget_counters WHERE covenant_id=?`,
-		covenantID).Scan(&s.BudgetLimit, &s.BudgetSpent)
+	err := db.QueryRow(`SELECT budget_limit, budget_spent, currency FROM budget_counters WHERE covenant_id=?`,
+		covenantID).Scan(&s.BudgetLimit, &s.BudgetSpent, &s.Currency)
 	if err == sql.ErrNoRows {
 		return s, nil // no counter = unlimited
 	}

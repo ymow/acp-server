@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS covenants (
     owner_share_pct REAL NOT NULL DEFAULT 30.0,
     platform_share_pct REAL NOT NULL DEFAULT 0.0,
     contributor_pool_pct REAL NOT NULL DEFAULT 70.0,
-    budget_limit    INTEGER NOT NULL DEFAULT 0,  -- USD cents; 0 = unlimited (ACR-300 v0.2)
+    budget_limit    INTEGER NOT NULL DEFAULT 0,  -- minor units of budget_currency; 0 = unlimited
+    budget_currency TEXT NOT NULL DEFAULT 'USD', -- ISO 4217; all cost_delta on this covenant must match
     cost_weight     REAL NOT NULL DEFAULT 1.0, -- ACR-20 §6: net_delta = tokens_delta - cost_weight × cost_delta
     owner_token     TEXT NOT NULL DEFAULT '', -- A-2: bearer token for owner-only operations
     token_rules_json TEXT NOT NULL DEFAULT '', -- JSON array of TokenRule objects
@@ -108,8 +109,9 @@ CREATE TABLE IF NOT EXISTS pending_tokens (
 
 CREATE TABLE IF NOT EXISTS budget_counters (
     covenant_id    TEXT PRIMARY KEY,
-    budget_limit   INTEGER NOT NULL DEFAULT 0,  -- USD cents; 0 = unlimited
-    budget_spent   INTEGER NOT NULL DEFAULT 0,  -- USD cents
+    budget_limit   INTEGER NOT NULL DEFAULT 0,  -- minor units of currency; 0 = unlimited
+    budget_spent   INTEGER NOT NULL DEFAULT 0,  -- minor units of currency
+    currency       TEXT NOT NULL DEFAULT 'USD', -- ISO 4217; mirrors covenants.budget_currency
     updated_at     TEXT NOT NULL
 );
 

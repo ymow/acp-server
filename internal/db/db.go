@@ -49,6 +49,10 @@ func applyMigrations(db *sql.DB) error {
 		// ACR-300@2.2: cost_currency column on audit_logs. Default 'USD' keeps
 		// legacy rows verifiable (2.0/2.1 hash payloads never included currency).
 		`ALTER TABLE audit_logs ADD COLUMN cost_currency TEXT NOT NULL DEFAULT 'USD'`,
+		// Phase 3.0: propagate currency to budget layer. execution.Run rejects
+		// a charge whose CostCurrency doesn't match covenants.budget_currency.
+		`ALTER TABLE covenants ADD COLUMN budget_currency TEXT NOT NULL DEFAULT 'USD'`,
+		`ALTER TABLE budget_counters ADD COLUMN currency TEXT NOT NULL DEFAULT 'USD'`,
 	}
 	for _, stmt := range migrations {
 		if _, err := db.Exec(stmt); err != nil && !isDuplicateColumn(err) {

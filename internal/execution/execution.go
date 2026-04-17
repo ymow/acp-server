@@ -183,6 +183,21 @@ func (e *Engine) Run(covenantID, agentID, sessionID string, tool Tool, params ma
 	if effects.CostCurrency == "" {
 		effects.CostCurrency = "USD"
 	}
+	// Phase 3.0: reject cross-currency charges. A non-USD CostCurrency against a
+	// USD-budget covenant would otherwise deduct the wrong amount from
+	// budget_counters and corrupt the audit trail. The budget package assumes
+	// a single currency per covenant; enforcement lives here.
+	budgetCurrency := cov.BudgetCurrency
+	if budgetCurrency == "" {
+		budgetCurrency = "USD"
+	}
+	if effects.CostDelta > 0 && effects.CostCurrency != budgetCurrency {
+		err := fmt.Errorf("cost_currency %q does not match covenant budget_currency %q",
+			effects.CostCurrency, budgetCurrency)
+		budget.ReleaseReservation(e.db, reservationID)
+		e.logRejection(covenantID, agentID, sessionID, tool, params, cov.State, err.Error())
+		return nil, fmt.Errorf("step4: %w", err)
+	}
 	effects.NetDelta = float64(effects.TokensDelta) - cov.CostWeight*float64(effects.CostDelta)
 
 	// ── Step 5: Write Audit Log  ← MUST precede Step 6 ───────────────────

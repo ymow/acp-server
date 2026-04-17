@@ -116,7 +116,7 @@ func TestE2EScenario(t *testing.T) {
 	t.Log("【狀態轉換】 OPEN → ACTIVE（開始接受貢獻）")
 
 	// 設定預算（業務語義：本專案總預算 $200）
-	mustOK(t, budget.EnsureCounter(conn, cov.CovenantID, 200.0), "設定預算")
+	mustOK(t, budget.EnsureCounter(conn, cov.CovenantID, 200.0, "USD"), "設定預算")
 	t.Log("【預算設定】 $200.00")
 
 	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -203,7 +203,7 @@ func TestE2EScenario(t *testing.T) {
 		mustOK(t, err, "approve budget agent")
 
 		// 預算設為 25，每次 propose 消耗 10
-		mustOK(t, budget.EnsureCounter(conn, budgetCov.CovenantID, 25.0), "設定預算 $25")
+		mustOK(t, budget.EnsureCounter(conn, budgetCov.CovenantID, 25.0, "USD"), "設定預算 $25")
 
 		// 第 1、2 次應成功（累計 20）
 		for i := 1; i <= 2; i++ {

@@ -83,7 +83,7 @@ func TestMVPAcceptanceCriteria(t *testing.T) {
 		must(t, err, "approve agent2")
 
 		// Budget: set a generous limit so budget gate is exercised
-		must(t, budget.EnsureCounter(conn, cov.CovenantID, 1000.0), "budget counter")
+		must(t, budget.EnsureCounter(conn, cov.CovenantID, 1000.0, "USD"), "budget counter")
 
 		// AC-3: Agent A proposes + gets approved → tokens calculated
 		r1, err := engine.Run(cov.CovenantID, agent1.AgentID, "sess_a",
@@ -257,7 +257,7 @@ func TestBudgetExhaustion(t *testing.T) {
 	must(t, err, "approve bex agent")
 
 	// Budget = 50; propose_passage costs 10 → 5 calls consume exactly 50.
-	must(t, budget.EnsureCounter(conn, cov.CovenantID, 50.0), "budget counter")
+	must(t, budget.EnsureCounter(conn, cov.CovenantID, 50.0, "USD"), "budget counter")
 
 	for i := 0; i < 5; i++ {
 		_, err := engine.Run(cov.CovenantID, agent.AgentID, "sess_bex",
@@ -309,7 +309,7 @@ func TestCostAndNetDeltaAccounting(t *testing.T) {
 	_, err = engine.Run(cov.CovenantID, owner.AgentID, "sess_owner",
 		&tools.ApproveAgent{}, map[string]any{"agent_id": agent.AgentID})
 	must(t, err, "approve agent")
-	must(t, budget.EnsureCounter(conn, cov.CovenantID, 1000.0), "budget")
+	must(t, budget.EnsureCounter(conn, cov.CovenantID, 1000.0, "USD"), "budget")
 
 	// Propose: EstimateCost = 10, TokensDelta = 0 → expected cost_delta=10, net_delta=-10.
 	rp, err := engine.Run(cov.CovenantID, agent.AgentID, "sess_nd",
@@ -435,7 +435,7 @@ func TestRejectDraftRefundsBudget(t *testing.T) {
 	_, err = engine.Run(cov.CovenantID, owner.AgentID, "sess_owner",
 		&tools.ApproveAgent{}, map[string]any{"agent_id": agent.AgentID})
 	must(t, err, "approve agent")
-	must(t, budget.EnsureCounter(conn, cov.CovenantID, 1000.0), "budget")
+	must(t, budget.EnsureCounter(conn, cov.CovenantID, 1000.0, "USD"), "budget")
 
 	_, err = engine.Run(cov.CovenantID, agent.AgentID, "sess_r",
 		&tools.ProposePassage{}, map[string]any{"unit_count": 1000})
@@ -500,7 +500,7 @@ func TestCostWeightApplied(t *testing.T) {
 	_, err = engine.Run(cov.CovenantID, owner.AgentID, "sess_owner",
 		&tools.ApproveAgent{}, map[string]any{"agent_id": agent.AgentID})
 	must(t, err, "approve agent")
-	must(t, budget.EnsureCounter(conn, cov.CovenantID, 1000.0), "budget")
+	must(t, budget.EnsureCounter(conn, cov.CovenantID, 1000.0, "USD"), "budget")
 
 	_, err = engine.Run(cov.CovenantID, agent.AgentID, "sess_w",
 		&tools.ProposePassage{}, map[string]any{"unit_count": 500})
@@ -551,7 +551,7 @@ func TestRebuildFromAuditLog(t *testing.T) {
 	_, err = engine.Run(cov.CovenantID, owner.AgentID, "sess_owner",
 		&tools.ApproveAgent{}, map[string]any{"agent_id": agent.AgentID})
 	must(t, err, "approve agent")
-	must(t, budget.EnsureCounter(conn, cov.CovenantID, 1000.0), "budget")
+	must(t, budget.EnsureCounter(conn, cov.CovenantID, 1000.0, "USD"), "budget")
 
 	// Run propose (10) + approve (5), then reject_draft (refunds 5).
 	// Net durable spend = 10.
@@ -627,7 +627,7 @@ func TestRebuildFromAuditLog_EmptyLedger(t *testing.T) {
 	covSvc := covenant.New(conn)
 	cov, _, err := covSvc.Create("Empty Test", "book", "pid_e_owner")
 	must(t, err, "create")
-	must(t, budget.EnsureCounter(conn, cov.CovenantID, 1000.0), "budget")
+	must(t, budget.EnsureCounter(conn, cov.CovenantID, 1000.0, "USD"), "budget")
 	// Simulate drift: pretend the counter has a bogus value.
 	_, err = conn.Exec(`UPDATE budget_counters SET budget_spent=999 WHERE covenant_id=?`,
 		cov.CovenantID)
@@ -642,6 +642,69 @@ func TestRebuildFromAuditLog_EmptyLedger(t *testing.T) {
 	if state.BudgetSpent != 0 {
 		t.Errorf("counter after rebuild: want 0, got %v", state.BudgetSpent)
 	}
+}
+
+// TestCrossCurrencyChargeRejected verifies that a charge whose cost_currency
+// does not match the covenant's budget_currency is rejected at Step 4 of the
+// execution flow — never reaching budget_counters or audit_logs as success.
+//
+// Motivation: budget_counters.budget_spent is a single-currency scalar; mixing
+// USD cents with EUR cents would corrupt the ledger. The enforcement lives in
+// execution.Run (not in the budget package) so budget internals can safely
+// assume uniform currency.
+func TestCrossCurrencyChargeRejected(t *testing.T) {
+	conn, err := db.Open(t.TempDir() + "/currency_mismatch.db")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer conn.Close()
+
+	covSvc := covenant.New(conn)
+	engine := execution.New(conn, covSvc)
+
+	cov, owner, err := covSvc.Create("Currency Mismatch", "book", "pid_cm_owner")
+	must(t, err, "create")
+	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil), "add tier")
+	_, err = covSvc.Transition(cov.CovenantID, "OPEN")
+	must(t, err, "→OPEN")
+	agent, err := covSvc.Join(cov.CovenantID, "pid_cm_agent", "contributor")
+	must(t, err, "join")
+	_, err = covSvc.Transition(cov.CovenantID, "ACTIVE")
+	must(t, err, "→ACTIVE")
+	_, err = engine.Run(cov.CovenantID, owner.AgentID, "sess_owner",
+		&tools.ApproveAgent{}, map[string]any{"agent_id": agent.AgentID})
+	must(t, err, "approve agent")
+
+	// Force covenant to EUR budget — ProposePassage charges USD cents, so any
+	// call now represents a cross-currency mismatch.
+	_, err = conn.Exec(`UPDATE covenants SET budget_currency='EUR' WHERE covenant_id=?`, cov.CovenantID)
+	must(t, err, "force EUR budget")
+	must(t, budget.EnsureCounter(conn, cov.CovenantID, 1000, "EUR"), "EUR counter")
+
+	_, err = engine.Run(cov.CovenantID, agent.AgentID, "sess_cm",
+		&tools.ProposePassage{}, map[string]any{"unit_count": 1000})
+	if err == nil {
+		t.Fatal("expected cross-currency rejection, got nil error")
+	}
+	if !strings.Contains(err.Error(), "does not match covenant budget_currency") {
+		t.Errorf("expected currency mismatch error, got: %v", err)
+	}
+
+	// Ledger invariant: nothing was deducted; no success row was written.
+	state, err := budget.GetState(conn, cov.CovenantID)
+	must(t, err, "get state")
+	if state.BudgetSpent != 0 {
+		t.Errorf("budget_spent after rejection: want 0, got %d", state.BudgetSpent)
+	}
+	var successCount int
+	err = conn.QueryRow(`SELECT COUNT(*) FROM audit_logs
+		WHERE covenant_id=? AND tool_name='propose_passage' AND result='success'`,
+		cov.CovenantID).Scan(&successCount)
+	must(t, err, "count success logs")
+	if successCount != 0 {
+		t.Errorf("expected 0 success audit rows, got %d", successCount)
+	}
+	t.Logf("✓ cross-currency charge rejected: %v", err)
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
