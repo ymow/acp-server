@@ -145,3 +145,48 @@ func GetState(db *sql.DB, covenantID string) (State, error) {
 	}
 	return s, err
 }
+
+// RebuildFromAuditLog reconstructs budget_counters.budget_spent from the
+// durable audit log chain. Required by ACP_Implementation_Spec_MVP Part 8:
+// when the runtime counter cache (e.g. Redis in Phase 2) is cold or has
+// drifted, the ledger must be the source of truth.
+//
+// The reconstruction sums cost_delta from successful audit_log entries and
+// subtracts refunds — entries whose corresponding token_ledger row has been
+// reversed by reject_draft. A naive SUM(cost_delta WHERE result='success')
+// would over-count in that case, since reject_draft records itself as its
+// own cost_delta=0 success entry rather than as a negative cost_delta on
+// the original row.
+//
+// Returns the reconstructed budget_spent total. Errors if the covenant has
+// no budget_counter row (caller must EnsureCounter first) — a missing row
+// signals misuse, not zero spend.
+func RebuildFromAuditLog(db *sql.DB, covenantID string) (float64, error) {
+	var total float64
+	err := db.QueryRow(`
+		SELECT COALESCE(SUM(a.cost_delta), 0)
+		FROM audit_logs a
+		LEFT JOIN token_ledger t ON t.log_id = a.log_id
+		WHERE a.covenant_id = ?
+		  AND a.result = 'success'
+		  AND (t.status IS NULL OR t.status NOT IN ('rejected', 'reversed'))`,
+		covenantID,
+	).Scan(&total)
+	if err != nil {
+		return 0, fmt.Errorf("rebuild sum: %w", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	res, err := db.Exec(`
+		UPDATE budget_counters SET budget_spent=?, updated_at=?
+		WHERE covenant_id=?`,
+		total, now, covenantID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("rebuild write: %w", err)
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		return 0, fmt.Errorf("rebuild: no budget_counter row for covenant %q (call EnsureCounter first)", covenantID)
+	}
+	return total, nil
+}

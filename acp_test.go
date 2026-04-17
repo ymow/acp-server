@@ -523,6 +523,127 @@ func TestCostWeightApplied(t *testing.T) {
 	t.Logf("✓ cost_weight=3.0 applied: net_delta=%v", ra.NetDelta)
 }
 
+// TestRebuildFromAuditLog verifies that budget_spent can be reconstructed
+// from the durable audit log chain after the runtime counter is wiped —
+// the Phase 2 Redis-restart scenario (ACP_Implementation_Spec_MVP Part 8).
+//
+// Exercises the non-trivial path: a reject_draft refund must be honoured,
+// so the rebuild excludes cost_delta whose token_ledger row is reversed.
+func TestRebuildFromAuditLog(t *testing.T) {
+	conn, err := db.Open(t.TempDir() + "/rebuild_test.db")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer conn.Close()
+
+	covSvc := covenant.New(conn)
+	engine := execution.New(conn, covSvc)
+
+	cov, owner, err := covSvc.Create("Rebuild Test", "book", "pid_rb_owner")
+	must(t, err, "create")
+	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil), "add tier")
+	_, err = covSvc.Transition(cov.CovenantID, "OPEN")
+	must(t, err, "→OPEN")
+	agent, err := covSvc.Join(cov.CovenantID, "pid_rb_agent", "contributor")
+	must(t, err, "join")
+	_, err = covSvc.Transition(cov.CovenantID, "ACTIVE")
+	must(t, err, "→ACTIVE")
+	_, err = engine.Run(cov.CovenantID, owner.AgentID, "sess_owner",
+		&tools.ApproveAgent{}, map[string]any{"agent_id": agent.AgentID})
+	must(t, err, "approve agent")
+	must(t, budget.EnsureCounter(conn, cov.CovenantID, 1000.0), "budget")
+
+	// Run propose (10) + approve (5), then reject_draft (refunds 5).
+	// Net durable spend = 10.
+	_, err = engine.Run(cov.CovenantID, agent.AgentID, "sess_rb",
+		&tools.ProposePassage{}, map[string]any{"word_count": 1000})
+	must(t, err, "propose")
+	draftID := getDraftID(t, conn, cov.CovenantID, agent.AgentID)
+	approveReceipt, err := engine.Run(cov.CovenantID, owner.AgentID, "sess_owner",
+		&tools.ApproveDraft{}, map[string]any{
+			"draft_id":         draftID,
+			"word_count":       1000,
+			"acceptance_ratio": 1.0,
+		})
+	must(t, err, "approve")
+	_, err = engine.Run(cov.CovenantID, owner.AgentID, "sess_owner",
+		&tools.RejectDraft{}, map[string]any{
+			"log_id": approveReceipt.ReceiptID,
+			"reason": "test rebuild",
+		})
+	must(t, err, "reject_draft")
+
+	// Sanity: the live counter should already reflect the refund.
+	state, err := budget.GetState(conn, cov.CovenantID)
+	must(t, err, "state before wipe")
+	if state.BudgetSpent != 10 {
+		t.Fatalf("pre-wipe budget_spent: want 10, got %v", state.BudgetSpent)
+	}
+
+	// Simulate a cold cache: wipe budget_spent in the counter.
+	_, err = conn.Exec(`UPDATE budget_counters SET budget_spent=0 WHERE covenant_id=?`,
+		cov.CovenantID)
+	must(t, err, "wipe counter")
+
+	rebuilt, err := budget.RebuildFromAuditLog(conn, cov.CovenantID)
+	must(t, err, "rebuild")
+	if rebuilt != 10 {
+		t.Errorf("rebuild returned: want 10, got %v", rebuilt)
+	}
+
+	state, err = budget.GetState(conn, cov.CovenantID)
+	must(t, err, "state after rebuild")
+	if state.BudgetSpent != 10 {
+		t.Errorf("post-rebuild budget_spent: want 10, got %v", state.BudgetSpent)
+	}
+	t.Logf("✓ rebuild reconstructed budget_spent=%v from audit_log after wipe", rebuilt)
+}
+
+// TestRebuildFromAuditLog_MissingCounter rejects rebuilding when the
+// caller forgot to EnsureCounter first — silent no-op would mask a bug.
+func TestRebuildFromAuditLog_MissingCounter(t *testing.T) {
+	conn, err := db.Open(t.TempDir() + "/rebuild_missing_test.db")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer conn.Close()
+
+	_, err = budget.RebuildFromAuditLog(conn, "cvnt_nonexistent")
+	if err == nil || !strings.Contains(err.Error(), "no budget_counter row") {
+		t.Fatalf("expected missing-counter error, got %v", err)
+	}
+}
+
+// TestRebuildFromAuditLog_EmptyLedger handles the boundary case: counter
+// exists, but no audit entries yet — rebuild should zero the counter
+// rather than leaving stale data.
+func TestRebuildFromAuditLog_EmptyLedger(t *testing.T) {
+	conn, err := db.Open(t.TempDir() + "/rebuild_empty_test.db")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer conn.Close()
+
+	covSvc := covenant.New(conn)
+	cov, _, err := covSvc.Create("Empty Test", "book", "pid_e_owner")
+	must(t, err, "create")
+	must(t, budget.EnsureCounter(conn, cov.CovenantID, 1000.0), "budget")
+	// Simulate drift: pretend the counter has a bogus value.
+	_, err = conn.Exec(`UPDATE budget_counters SET budget_spent=999 WHERE covenant_id=?`,
+		cov.CovenantID)
+	must(t, err, "inject drift")
+
+	rebuilt, err := budget.RebuildFromAuditLog(conn, cov.CovenantID)
+	must(t, err, "rebuild")
+	if rebuilt != 0 {
+		t.Errorf("empty-ledger rebuild: want 0, got %v", rebuilt)
+	}
+	state, _ := budget.GetState(conn, cov.CovenantID)
+	if state.BudgetSpent != 0 {
+		t.Errorf("counter after rebuild: want 0, got %v", state.BudgetSpent)
+	}
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 func must(t *testing.T, err error, label string) {

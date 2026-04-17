@@ -53,15 +53,20 @@ tickets or fixed.
   4. When x402 lands, populate `cost_cents` from the actual payment
      receipt in Step 3.
 
-### No budget counter rebuild from audit_log
+### No budget counter rebuild from audit_log — DONE
 - **Spec:** `ACP_Implementation_Spec_MVP.md` Part 8 — Redis restart must be
-  able to reconstruct `budget_spent` by summing `audit_log.cost_delta`.
-- **Current state:** `internal/budget/budget.go` holds state in SQLite only;
-  no rebuild routine exists. Not an issue today (SQLite is durable) but
-  will be when Phase 2 swaps in Redis.
-- **Fix sketch:** `budget.RebuildFromAuditLog(db, covenantID)` that runs
-  `SELECT SUM(cost_delta) FROM audit_logs WHERE covenant_id=? AND result='success'`
-  and writes the result to `budget_counters`.
+  able to reconstruct `budget_spent` from durable storage.
+- **Resolved:** `budget.RebuildFromAuditLog(db, covenantID)` in
+  `internal/budget/budget.go`. The naive `SUM(cost_delta WHERE result='success')`
+  from the original sketch would have over-counted refunds, because
+  `reject_draft` logs itself as its own success row with cost_delta=0 rather
+  than a negative cost_delta on the original entry. The implementation LEFT
+  JOINs `token_ledger` and excludes entries whose ledger status is
+  `rejected` or `reversed`, matching what the live counter accumulates via
+  `RecordSpend` / `Release`.
+- **Tests:** `TestRebuildFromAuditLog` (propose+approve+reject, wipe,
+  rebuild → 10), `_MissingCounter` (errors when EnsureCounter not called),
+  `_EmptyLedger` (zeroes drift when no audit rows exist).
 
 ---
 
