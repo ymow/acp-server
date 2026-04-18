@@ -61,6 +61,12 @@ func applyMigrations(db *sql.DB) error {
 		// covers covenant_id|agent_id|agent_tokens|cost_tokens|snapped_at so
 		// any after-the-fact edit to the token_snapshots row is detectable.
 		`ALTER TABLE token_snapshots ADD COLUMN snapshot_hash TEXT NOT NULL DEFAULT ''`,
+		// Phase 3.A: ACR-400 Git Covenant Twin binding. Empty defaults mean
+		// the covenant has no git twin attached; SetGitTwin populates them
+		// and only while the covenant is DRAFT.
+		`ALTER TABLE covenants ADD COLUMN git_twin_url TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE covenants ADD COLUMN git_twin_provider TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE covenants ADD COLUMN git_twin_config_json TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, stmt := range migrations {
 		if _, err := db.Exec(stmt); err != nil && !isDuplicateColumn(err) {

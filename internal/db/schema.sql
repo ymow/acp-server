@@ -22,6 +22,11 @@ CREATE TABLE IF NOT EXISTS covenants (
     cost_weight     REAL NOT NULL DEFAULT 1.0, -- ACR-20 §6: net_delta = tokens_delta - cost_weight × cost_delta
     owner_token     TEXT NOT NULL DEFAULT '', -- A-2: bearer token for owner-only operations
     token_rules_json TEXT NOT NULL DEFAULT '', -- JSON array of TokenRule objects
+    -- ACR-400 Part 1: optional binding to an external git repo Digital Twin.
+    -- Configurable only while DRAFT (enforced in covenant.SetGitTwin).
+    git_twin_url         TEXT NOT NULL DEFAULT '', -- HTTPS clone URL; '' = no binding
+    git_twin_provider    TEXT NOT NULL DEFAULT '', -- github | gitlab | gitea | local-hook
+    git_twin_config_json TEXT NOT NULL DEFAULT '', -- JSON: branch allowlist, webhook_secret_hash, unit_mapper
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
@@ -171,3 +176,37 @@ CREATE TABLE IF NOT EXISTS budget_reservations (
   status       TEXT NOT NULL DEFAULT 'reserved',  -- reserved | settled | released
   created_at   TEXT NOT NULL
 );
+
+-- ── Git Twin Events (ACR-400 Part 7.2 idempotency) ────────────────────────
+
+CREATE TABLE IF NOT EXISTS git_twin_events (
+  draft_ref      TEXT PRIMARY KEY,            -- PR URL or commit SHA; bridge idempotency key
+  covenant_id    TEXT NOT NULL,
+  agent_id       TEXT NOT NULL,
+  draft_id       TEXT NOT NULL DEFAULT '',    -- pending_tokens.draft_id after propose
+  propose_log_id TEXT NOT NULL DEFAULT '',
+  approve_log_id TEXT NOT NULL DEFAULT '',
+  status         TEXT NOT NULL DEFAULT 'proposed',  -- proposed | approved | rejected
+  created_at     TEXT NOT NULL,
+  updated_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_git_twin_events_covenant ON git_twin_events(covenant_id);
+
+-- ── Git Twin Anchors (ACR-400 Part 5) ─────────────────────────────────────
+-- Server enqueues a pending row at confirm_settlement; the bridge polls, writes
+-- a git note to refs/notes/acp-anchors, then acks with the resulting commit SHA.
+CREATE TABLE IF NOT EXISTS git_twin_anchors (
+  anchor_id            TEXT PRIMARY KEY,            -- anch_<random8>
+  covenant_id          TEXT NOT NULL,
+  settlement_output_id TEXT NOT NULL,
+  repo_url             TEXT NOT NULL,
+  settlement_hash      TEXT NOT NULL,               -- settlement_outputs.trigger_log_hash
+  snapshot_hash        TEXT NOT NULL,               -- roll-up over token_snapshots for this covenant
+  note_body            TEXT NOT NULL,               -- JSON payload the bridge writes as a git note
+  status               TEXT NOT NULL DEFAULT 'pending',  -- pending | written
+  enqueued_at          TEXT NOT NULL,
+  written_at           TEXT,
+  written_commit_sha   TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_git_twin_anchors_status ON git_twin_anchors(status, enqueued_at);
+CREATE INDEX IF NOT EXISTS idx_git_twin_anchors_covenant ON git_twin_anchors(covenant_id);

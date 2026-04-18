@@ -65,6 +65,15 @@ func (t *ProposePassage) CalculateSideEffects(ctx *execution.Context, _ map[stri
 	return execution.SideEffects{StateAfter: ctx.Covenant.State}
 }
 
+// EnrichReceipt surfaces draft_id to callers. The engine's Step 8 receipt
+// otherwise omits it, which forces the git bridge (ACR-400) to probe
+// pending_tokens for the row it just wrote — racy and DB-tied.
+func (t *ProposePassage) EnrichReceipt(receipt *execution.Receipt, result map[string]any) {
+	if d, ok := result["draft_id"].(string); ok {
+		receipt.Extra["draft_id"] = d
+	}
+}
+
 func (t *ProposePassage) ApplySideEffects(ctx *execution.Context, _ *audit.Entry, _ execution.SideEffects, result map[string]any, _ map[string]any) error {
 	return tokens.CreatePending(ctx.DB, ctx.Covenant.CovenantID, ctx.Member.AgentID, result["draft_id"].(string))
 }

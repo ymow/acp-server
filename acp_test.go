@@ -1,18 +1,26 @@
 package main_test
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/inkmesh/acp-server/internal/api"
 	"github.com/inkmesh/acp-server/internal/audit"
 	"github.com/inkmesh/acp-server/internal/budget"
 	"github.com/inkmesh/acp-server/internal/covenant"
 	"github.com/inkmesh/acp-server/internal/db"
 	"github.com/inkmesh/acp-server/internal/execution"
+	"github.com/inkmesh/acp-server/internal/gittwin"
 	"github.com/inkmesh/acp-server/internal/sessions"
 	"github.com/inkmesh/acp-server/internal/tokens"
 	"github.com/inkmesh/acp-server/tools"
@@ -1020,6 +1028,635 @@ func TestTokenRuleDrivesApproveDraft(t *testing.T) {
 	if receipt.TokensAwarded != 60 {
 		t.Errorf("rule-driven tokens: want 60, got %d", receipt.TokensAwarded)
 	}
+}
+
+// ── Phase 3.A: Git Covenant Twin (ACR-400) ──────────────────────────────────
+
+// TestGitTwinMergeFlow exercises /git-twin/merge: bridge auth, propose+approve
+// atomicity, idempotency on retry, and unmapped-author handling. The test is
+// HTTP-level on purpose — the bridge path is an HTTP boundary, so a pure
+// service-level unit test would miss the auth + decoding seams.
+func TestGitTwinMergeFlow(t *testing.T) {
+	conn, covSvc, server, teardown := setupTwinServer(t, "twin-secret")
+	defer teardown()
+
+	// Covenant lifecycle: create → add tier → open → join author → approve → ACTIVE
+	cov, owner, err := covSvc.Create("Git Twin Covenant", "code", "github:owner")
+	must(t, err, "create")
+	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil), "add tier")
+	_, err = covSvc.Transition(cov.CovenantID, "OPEN")
+	must(t, err, "→OPEN")
+	author, err := covSvc.Join(cov.CovenantID, "github:alice", "contributor")
+	must(t, err, "join author")
+	engine := execution.New(conn, covSvc)
+	_, err = engine.Run(cov.CovenantID, owner.AgentID, "sess_o",
+		&tools.ApproveAgent{}, map[string]any{"agent_id": author.AgentID})
+	must(t, err, "approve author")
+	_, err = covSvc.Transition(cov.CovenantID, "ACTIVE")
+	must(t, err, "→ACTIVE")
+	must(t, budget.EnsureCounter(conn, cov.CovenantID, 10000, "USD"), "budget")
+
+	draftRef := "https://github.com/o/r/pull/42"
+
+	// — Missing bridge secret → 401 —
+	resp := postJSON(t, server.URL+"/git-twin/merge", nil, map[string]any{
+		"covenant_id":        cov.CovenantID,
+		"author_platform_id": "github:alice",
+		"draft_ref":          draftRef,
+		"unit_count":         120,
+	})
+	if resp.StatusCode != 401 {
+		t.Fatalf("no auth should be 401, got %d", resp.StatusCode)
+	}
+
+	// — Wrong secret → 401 —
+	resp = postJSON(t, server.URL+"/git-twin/merge",
+		map[string]string{"X-Bridge-Secret": "wrong"},
+		map[string]any{"covenant_id": cov.CovenantID, "author_platform_id": "github:alice", "draft_ref": draftRef, "unit_count": 120})
+	if resp.StatusCode != 401 {
+		t.Fatalf("wrong secret should be 401, got %d", resp.StatusCode)
+	}
+
+	// — Happy path —
+	body := map[string]any{
+		"covenant_id":        cov.CovenantID,
+		"author_platform_id": "github:alice",
+		"draft_ref":          draftRef,
+		"unit_count":         120,
+		"acceptance_ratio":   1.0,
+	}
+	resp = postJSON(t, server.URL+"/git-twin/merge",
+		map[string]string{"X-Bridge-Secret": "twin-secret"}, body)
+	if resp.StatusCode != 200 {
+		t.Fatalf("merge: want 200 got %d body=%s", resp.StatusCode, resp.Body)
+	}
+	if resp.JSON["propose_receipt"] == nil || resp.JSON["approve_receipt"] == nil {
+		t.Fatalf("merge response missing receipts: %v", resp.JSON)
+	}
+
+	// Ledger check: author should have confirmed tokens.
+	var confirmed int
+	must(t, conn.QueryRow(
+		`SELECT COALESCE(SUM(delta),0) FROM token_ledger WHERE covenant_id=? AND agent_id=? AND status='confirmed'`,
+		cov.CovenantID, author.AgentID).Scan(&confirmed), "ledger query")
+	if confirmed <= 0 {
+		t.Fatalf("expected confirmed tokens for author, got %d", confirmed)
+	}
+
+	// — Idempotent retry —
+	resp = postJSON(t, server.URL+"/git-twin/merge",
+		map[string]string{"X-Bridge-Secret": "twin-secret"}, body)
+	if resp.StatusCode != 200 {
+		t.Fatalf("retry: want 200 got %d body=%s", resp.StatusCode, resp.Body)
+	}
+	if resp.JSON["idempotent"] != true {
+		t.Fatalf("retry should be idempotent, got %v", resp.JSON)
+	}
+
+	// Ledger total must not have doubled.
+	var confirmedAfter int
+	must(t, conn.QueryRow(
+		`SELECT COALESCE(SUM(delta),0) FROM token_ledger WHERE covenant_id=? AND agent_id=? AND status='confirmed'`,
+		cov.CovenantID, author.AgentID).Scan(&confirmedAfter), "ledger query after retry")
+	if confirmedAfter != confirmed {
+		t.Fatalf("idempotency violated: %d → %d", confirmed, confirmedAfter)
+	}
+
+	// — Unmapped author → 200 with unmapped=true, ledger untouched —
+	resp = postJSON(t, server.URL+"/git-twin/merge",
+		map[string]string{"X-Bridge-Secret": "twin-secret"},
+		map[string]any{
+			"covenant_id":        cov.CovenantID,
+			"author_platform_id": "github:stranger",
+			"draft_ref":          "https://github.com/o/r/pull/99",
+			"unit_count":         50,
+		})
+	if resp.StatusCode != 200 || resp.JSON["unmapped"] != true {
+		t.Fatalf("unmapped author should be 200 with unmapped=true, got %d %v", resp.StatusCode, resp.JSON)
+	}
+}
+
+// TestGitTwinAnchorLifecycle walks a twin-bound covenant through settlement
+// and checks that confirm_settlement_output enqueues a pending Git Anchor,
+// the bridge can list it, and the ack flips status to 'written' with the
+// commit SHA the bridge supplies. Covers ACR-400 Part 5 server plumbing.
+func TestGitTwinAnchorLifecycle(t *testing.T) {
+	conn, covSvc, server, teardown := setupTwinServer(t, "twin-secret")
+	defer teardown()
+
+	repoURL := "https://github.com/anchors/demo"
+	cov, owner, err := covSvc.Create("Anchor Covenant", "code", "github:owner")
+	must(t, err, "create")
+	must(t, covSvc.SetGitTwin(cov.CovenantID, repoURL, "github", ""), "bind twin")
+	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil), "tier")
+	_, err = covSvc.Transition(cov.CovenantID, "OPEN")
+	must(t, err, "→OPEN")
+	author, err := covSvc.Join(cov.CovenantID, "github:alice", "contributor")
+	must(t, err, "join author")
+	engine := execution.New(conn, covSvc)
+	_, err = engine.Run(cov.CovenantID, owner.AgentID, "sess_o",
+		&tools.ApproveAgent{}, map[string]any{"agent_id": author.AgentID})
+	must(t, err, "approve author")
+	_, err = covSvc.Transition(cov.CovenantID, "ACTIVE")
+	must(t, err, "→ACTIVE")
+	must(t, budget.EnsureCounter(conn, cov.CovenantID, 10000, "USD"), "budget")
+
+	// Drive a contribution through the bridge endpoint so the ledger has tokens
+	// before we settle. The merge endpoint reuses the propose+approve path.
+	resp := postJSON(t, server.URL+"/git-twin/merge",
+		map[string]string{"X-Bridge-Secret": "twin-secret"},
+		map[string]any{
+			"covenant_id":        cov.CovenantID,
+			"author_platform_id": "github:alice",
+			"draft_ref":          "https://github.com/anchors/demo/pull/1",
+			"unit_count":         80,
+			"acceptance_ratio":   1.0,
+		})
+	if resp.StatusCode != 200 {
+		t.Fatalf("merge: want 200 got %d body=%s", resp.StatusCode, resp.Body)
+	}
+
+	// LOCKED → generate_settlement → confirm.
+	_, err = covSvc.Transition(cov.CovenantID, "LOCKED")
+	must(t, err, "→LOCKED")
+	genReceipt, err := engine.Run(cov.CovenantID, owner.AgentID, "sess_o",
+		&tools.GenerateSettlement{}, map[string]any{})
+	must(t, err, "generate_settlement")
+	outputID, _ := genReceipt.Extra["output_id"].(string)
+	if outputID == "" {
+		t.Fatalf("generate_settlement missing output_id: %+v", genReceipt.Extra)
+	}
+	confirmReceipt, err := engine.Run(cov.CovenantID, owner.AgentID, "sess_o",
+		&tools.ConfirmSettlementOutput{},
+		map[string]any{"settlement_output_id": outputID})
+	must(t, err, "confirm_settlement_output")
+	anchorID, _ := confirmReceipt.Extra["anchor_id"].(string)
+	if anchorID == "" {
+		t.Fatalf("confirm_settlement_output did not enqueue anchor: %+v", confirmReceipt.Extra)
+	}
+
+	// Unauthenticated list → 401.
+	listNoAuth := getJSON(t, server.URL+"/git-twin/anchors/pending", nil)
+	if listNoAuth.StatusCode != 401 {
+		t.Fatalf("unauth list should be 401, got %d", listNoAuth.StatusCode)
+	}
+
+	// Authenticated list → our anchor comes back with the right metadata.
+	list := getJSON(t, server.URL+"/git-twin/anchors/pending?repo_url="+repoURL,
+		map[string]string{"X-Bridge-Secret": "twin-secret"})
+	if list.StatusCode != 200 {
+		t.Fatalf("list anchors: want 200 got %d body=%s", list.StatusCode, list.Body)
+	}
+	anchors, _ := list.JSON["anchors"].([]any)
+	if len(anchors) != 1 {
+		t.Fatalf("want 1 pending anchor, got %d: %s", len(anchors), list.Body)
+	}
+	a := anchors[0].(map[string]any)
+	if a["anchor_id"] != anchorID {
+		t.Fatalf("list anchor_id mismatch: want %s got %v", anchorID, a["anchor_id"])
+	}
+	if a["settlement_output_id"] != outputID {
+		t.Fatalf("list settlement_output_id mismatch: %v", a["settlement_output_id"])
+	}
+	if a["repo_url"] != repoURL {
+		t.Fatalf("list repo_url mismatch: %v", a["repo_url"])
+	}
+	if sh, _ := a["snapshot_hash"].(string); sh == "" {
+		t.Fatalf("snapshot_hash must be populated (covenant had a LOCKED snapshot): %v", a)
+	}
+	if nb, _ := a["note_body"].(string); !strings.Contains(nb, "acp.anchor.settlement.v1") ||
+		!strings.Contains(nb, outputID) {
+		t.Fatalf("note_body malformed: %v", a["note_body"])
+	}
+
+	// Ack without auth → 401.
+	ackNoAuth := postJSON(t, server.URL+"/git-twin/anchors/"+anchorID+"/ack", nil,
+		map[string]any{"written_commit_sha": "deadbeef"})
+	if ackNoAuth.StatusCode != 401 {
+		t.Fatalf("unauth ack should be 401, got %d", ackNoAuth.StatusCode)
+	}
+
+	// Ack with empty SHA → 400.
+	ackEmpty := postJSON(t, server.URL+"/git-twin/anchors/"+anchorID+"/ack",
+		map[string]string{"X-Bridge-Secret": "twin-secret"},
+		map[string]any{"written_commit_sha": ""})
+	if ackEmpty.StatusCode != 400 {
+		t.Fatalf("empty sha ack should be 400, got %d", ackEmpty.StatusCode)
+	}
+
+	// Happy ack.
+	ack := postJSON(t, server.URL+"/git-twin/anchors/"+anchorID+"/ack",
+		map[string]string{"X-Bridge-Secret": "twin-secret"},
+		map[string]any{"written_commit_sha": "abcdef1234567890"})
+	if ack.StatusCode != 200 {
+		t.Fatalf("ack: want 200 got %d body=%s", ack.StatusCode, ack.Body)
+	}
+
+	// Pending list should now be empty.
+	list2 := getJSON(t, server.URL+"/git-twin/anchors/pending?repo_url="+repoURL,
+		map[string]string{"X-Bridge-Secret": "twin-secret"})
+	pending2, _ := list2.JSON["anchors"].([]any)
+	if len(pending2) != 0 {
+		t.Fatalf("after ack, pending list should be empty, got %d: %s", len(pending2), list2.Body)
+	}
+
+	// DB should show 'written' + our commit SHA.
+	var status, sha string
+	must(t, conn.QueryRow(
+		`SELECT status, COALESCE(written_commit_sha,'') FROM git_twin_anchors WHERE anchor_id=?`,
+		anchorID).Scan(&status, &sha), "select anchor")
+	if status != "written" || sha != "abcdef1234567890" {
+		t.Fatalf("anchor row not updated: status=%s sha=%s", status, sha)
+	}
+
+	// Re-ack with same SHA is a no-op (200).
+	ackSame := postJSON(t, server.URL+"/git-twin/anchors/"+anchorID+"/ack",
+		map[string]string{"X-Bridge-Secret": "twin-secret"},
+		map[string]any{"written_commit_sha": "abcdef1234567890"})
+	if ackSame.StatusCode != 200 {
+		t.Fatalf("same-sha re-ack should be 200, got %d", ackSame.StatusCode)
+	}
+
+	// Re-ack with different SHA → 409 (split-brain guard).
+	ackConflict := postJSON(t, server.URL+"/git-twin/anchors/"+anchorID+"/ack",
+		map[string]string{"X-Bridge-Secret": "twin-secret"},
+		map[string]any{"written_commit_sha": "0000000000000000"})
+	if ackConflict.StatusCode != 409 {
+		t.Fatalf("conflicting re-ack should be 409, got %d body=%s", ackConflict.StatusCode, ackConflict.Body)
+	}
+
+	// Unknown anchor → 404.
+	ack404 := postJSON(t, server.URL+"/git-twin/anchors/anch_nope/ack",
+		map[string]string{"X-Bridge-Secret": "twin-secret"},
+		map[string]any{"written_commit_sha": "ffffffffffffffff"})
+	if ack404.StatusCode != 404 {
+		t.Fatalf("missing anchor should be 404, got %d", ack404.StatusCode)
+	}
+}
+
+// TestGitTwinAuditEvent covers the non-merge event forwarder (push.*, PR
+// opened/rejected, settlement tag). Audit-only by design: nothing in the
+// ledger moves, but the event has to land in audit_logs under a real agent
+// so verifiers can reconstruct twin history and the hash chain stays intact.
+func TestGitTwinAuditEvent(t *testing.T) {
+	conn, covSvc, server, teardown := setupTwinServer(t, "twin-secret")
+	defer teardown()
+
+	cov, owner, err := covSvc.Create("Audit Event Covenant", "code", "github:owner")
+	must(t, err, "create")
+	must(t, covSvc.SetGitTwin(cov.CovenantID, "https://github.com/audit/demo", "github", ""), "bind twin")
+	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil), "tier")
+	_, err = covSvc.Transition(cov.CovenantID, "OPEN")
+	must(t, err, "→OPEN")
+	alice, err := covSvc.Join(cov.CovenantID, "github:alice", "contributor")
+	must(t, err, "join alice")
+	engine := execution.New(conn, covSvc)
+	_, err = engine.Run(cov.CovenantID, owner.AgentID, "sess_o",
+		&tools.ApproveAgent{}, map[string]any{"agent_id": alice.AgentID})
+	must(t, err, "approve alice")
+	_, err = covSvc.Transition(cov.CovenantID, "ACTIVE")
+	must(t, err, "→ACTIVE")
+	must(t, budget.EnsureCounter(conn, cov.CovenantID, 10000, "USD"), "budget")
+
+	eventURL := server.URL + "/git-twin/event"
+	authHeaders := map[string]string{"X-Bridge-Secret": "twin-secret"}
+
+	// Auth rejection.
+	noAuth := postJSON(t, eventURL, nil, map[string]any{
+		"covenant_id": cov.CovenantID,
+		"event_kind":  "push.forced",
+	})
+	if noAuth.StatusCode != 401 {
+		t.Fatalf("unauth should be 401, got %d", noAuth.StatusCode)
+	}
+
+	// Missing required fields → 400.
+	missing := postJSON(t, eventURL, authHeaders, map[string]any{"event_kind": "push.forced"})
+	if missing.StatusCode != 400 {
+		t.Fatalf("missing covenant_id should be 400, got %d body=%s", missing.StatusCode, missing.Body)
+	}
+
+	// Unknown event_kind → engine rejects in Step 2 (BadRequest).
+	bad := postJSON(t, eventURL, authHeaders, map[string]any{
+		"covenant_id": cov.CovenantID,
+		"event_kind":  "push.totally_made_up",
+	})
+	if bad.StatusCode != 400 {
+		t.Fatalf("unknown event_kind should be 400, got %d body=%s", bad.StatusCode, bad.Body)
+	}
+
+	// Mapped actor → agent_id resolves to alice; mapped_actor=true.
+	mapped := postJSON(t, eventURL, authHeaders, map[string]any{
+		"covenant_id":       cov.CovenantID,
+		"actor_platform_id": "github:alice",
+		"event_kind":        "push.forced",
+		"ref":               "refs/heads/main",
+		"commit_head":       "a1b2c3d4e5f6",
+		"summary":           "force-push rebased main",
+	})
+	if mapped.StatusCode != 200 {
+		t.Fatalf("mapped event: want 200 got %d body=%s", mapped.StatusCode, mapped.Body)
+	}
+	if got, _ := mapped.JSON["agent_id"].(string); got != alice.AgentID {
+		t.Fatalf("mapped agent_id: want %s got %v", alice.AgentID, mapped.JSON["agent_id"])
+	}
+	if m, _ := mapped.JSON["mapped_actor"].(bool); !m {
+		t.Fatalf("mapped_actor should be true for github:alice: %s", mapped.Body)
+	}
+
+	// Unmapped actor → falls back to owner; mapped_actor=false.
+	unmapped := postJSON(t, eventURL, authHeaders, map[string]any{
+		"covenant_id":       cov.CovenantID,
+		"actor_platform_id": "github:nobody-here",
+		"event_kind":        "pull_request.opened",
+		"ref":               "refs/heads/main",
+		"commit_head":       "deadbeef",
+		"summary":           "drive-by PR",
+	})
+	if unmapped.StatusCode != 200 {
+		t.Fatalf("unmapped event: want 200 got %d body=%s", unmapped.StatusCode, unmapped.Body)
+	}
+	if got, _ := unmapped.JSON["agent_id"].(string); got != owner.AgentID {
+		t.Fatalf("unmapped agent_id: want owner %s got %v", owner.AgentID, unmapped.JSON["agent_id"])
+	}
+	if m, _ := unmapped.JSON["mapped_actor"].(bool); m {
+		t.Fatalf("mapped_actor should be false for unknown login: %s", unmapped.Body)
+	}
+
+	// Blank actor_platform_id also falls back to owner.
+	blank := postJSON(t, eventURL, authHeaders, map[string]any{
+		"covenant_id": cov.CovenantID,
+		"event_kind":  "tag.settlement",
+		"commit_head": "cafebabe",
+		"summary":     "settlement-2026-Q1",
+	})
+	if blank.StatusCode != 200 {
+		t.Fatalf("blank actor: want 200 got %d body=%s", blank.StatusCode, blank.Body)
+	}
+	if got, _ := blank.JSON["agent_id"].(string); got != owner.AgentID {
+		t.Fatalf("blank actor agent_id: want owner %s got %v", owner.AgentID, blank.JSON["agent_id"])
+	}
+
+	// Hash chain must still verify after three audit-only rows land.
+	if valid, violations := audit.VerifyChain(conn, cov.CovenantID); !valid {
+		t.Fatalf("audit hash chain broken after git twin events: %v", violations)
+	}
+
+	// Audit rows should show tool_name=record_git_twin_event with zero token/cost deltas.
+	var count int
+	must(t, conn.QueryRow(
+		`SELECT COUNT(*) FROM audit_logs WHERE covenant_id=? AND tool_name='record_git_twin_event' AND result='success'`,
+		cov.CovenantID).Scan(&count), "count audit rows")
+	if count != 3 {
+		t.Fatalf("expected 3 record_git_twin_event rows, got %d", count)
+	}
+	var sumTokens, sumCost int
+	must(t, conn.QueryRow(
+		`SELECT COALESCE(SUM(tokens_delta),0), COALESCE(SUM(cost_delta),0) FROM audit_logs
+		 WHERE covenant_id=? AND tool_name='record_git_twin_event'`,
+		cov.CovenantID).Scan(&sumTokens, &sumCost), "sum deltas")
+	if sumTokens != 0 || sumCost != 0 {
+		t.Fatalf("git twin events should not move ledger: tokens=%d cost=%d", sumTokens, sumCost)
+	}
+}
+
+// TestGitTwinAnchorSigned exercises chunk 7: a signer set on
+// ConfirmSettlementOutput causes the anchor note to carry an ed25519
+// signature that gittwin.VerifyAnchorSignature can validate.
+func TestGitTwinAnchorSigned(t *testing.T) {
+	conn, covSvc, server, teardown := setupTwinServer(t, "twin-secret")
+	defer teardown()
+
+	signer, signerB64, err := gittwin.GenerateSigningKey()
+	must(t, err, "gen signer")
+	prev, had := os.LookupEnv(gittwin.AnchorSigningKeyEnv)
+	os.Setenv(gittwin.AnchorSigningKeyEnv, signerB64)
+	defer func() {
+		if had {
+			os.Setenv(gittwin.AnchorSigningKeyEnv, prev)
+		} else {
+			os.Unsetenv(gittwin.AnchorSigningKeyEnv)
+		}
+	}()
+
+	repoURL := "https://github.com/anchors/signed"
+	cov, owner, err := covSvc.Create("Signed Anchor Covenant", "code", "github:owner")
+	must(t, err, "create")
+	must(t, covSvc.SetGitTwin(cov.CovenantID, repoURL, "github", ""), "bind twin")
+	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil), "tier")
+	_, err = covSvc.Transition(cov.CovenantID, "OPEN")
+	must(t, err, "→OPEN")
+	author, err := covSvc.Join(cov.CovenantID, "github:alice", "contributor")
+	must(t, err, "join")
+	engine := execution.New(conn, covSvc)
+	_, err = engine.Run(cov.CovenantID, owner.AgentID, "sess_o",
+		&tools.ApproveAgent{}, map[string]any{"agent_id": author.AgentID})
+	must(t, err, "approve")
+	_, err = covSvc.Transition(cov.CovenantID, "ACTIVE")
+	must(t, err, "→ACTIVE")
+	must(t, budget.EnsureCounter(conn, cov.CovenantID, 10000, "USD"), "budget")
+
+	resp := postJSON(t, server.URL+"/git-twin/merge",
+		map[string]string{"X-Bridge-Secret": "twin-secret"},
+		map[string]any{
+			"covenant_id":        cov.CovenantID,
+			"author_platform_id": "github:alice",
+			"draft_ref":          "https://github.com/anchors/signed/pull/1",
+			"unit_count":         50,
+			"acceptance_ratio":   1.0,
+		})
+	if resp.StatusCode != 200 {
+		t.Fatalf("merge: want 200 got %d body=%s", resp.StatusCode, resp.Body)
+	}
+
+	_, err = covSvc.Transition(cov.CovenantID, "LOCKED")
+	must(t, err, "→LOCKED")
+	genReceipt, err := engine.Run(cov.CovenantID, owner.AgentID, "sess_o",
+		&tools.GenerateSettlement{}, map[string]any{})
+	must(t, err, "generate_settlement")
+	outputID, _ := genReceipt.Extra["output_id"].(string)
+
+	// The tool instance wired into api.New reads the signer at startup; for
+	// this direct engine.Run path we pass the signer on the tool struct.
+	_, err = engine.Run(cov.CovenantID, owner.AgentID, "sess_o",
+		&tools.ConfirmSettlementOutput{AnchorSigner: signer},
+		map[string]any{"settlement_output_id": outputID})
+	must(t, err, "confirm_settlement_output")
+
+	// Pull the anchor row and verify its note body.
+	var noteBody string
+	must(t, conn.QueryRow(
+		`SELECT note_body FROM git_twin_anchors WHERE covenant_id=?`,
+		cov.CovenantID).Scan(&noteBody), "select anchor")
+
+	ok, err := gittwin.VerifyAnchorSignature([]byte(noteBody))
+	if err != nil {
+		t.Fatalf("verify anchor signature: %v", err)
+	}
+	if !ok {
+		t.Fatal("signed anchor should verify; got false")
+	}
+
+	// Tampering invalidates it.
+	tampered := strings.Replace(noteBody, "\"total_tokens\":", "\"total_tokens\":9999,\"old_total_tokens\":", 1)
+	ok, _ = gittwin.VerifyAnchorSignature([]byte(tampered))
+	if ok {
+		t.Fatal("tampered anchor should not verify")
+	}
+
+	// The /git-twin/pubkey endpoint is only wired via api.New, which reads
+	// the env var at construction. The httptest.Server in setupTwinServer
+	// was built before we set the env, so it has no signer — we verify the
+	// no-signer path here and cover the happy path via the unit test below.
+	pub := getJSON(t, server.URL+"/git-twin/pubkey", nil)
+	if pub.StatusCode != 404 {
+		t.Fatalf("pubkey endpoint without signer: want 404 got %d body=%s", pub.StatusCode, pub.Body)
+	}
+}
+
+// TestGitTwinPubkeyEndpoint covers the /git-twin/pubkey happy path: server
+// started with a signer configured exposes {alg, public_key} to anyone.
+func TestGitTwinPubkeyEndpoint(t *testing.T) {
+	signer, signerB64, err := gittwin.GenerateSigningKey()
+	must(t, err, "gen signer")
+	prev, had := os.LookupEnv(gittwin.AnchorSigningKeyEnv)
+	os.Setenv(gittwin.AnchorSigningKeyEnv, signerB64)
+	defer func() {
+		if had {
+			os.Setenv(gittwin.AnchorSigningKeyEnv, prev)
+		} else {
+			os.Unsetenv(gittwin.AnchorSigningKeyEnv)
+		}
+	}()
+
+	dbPath := t.TempDir() + "/pubkey.db"
+	conn, err := db.Open(dbPath)
+	must(t, err, "open db")
+	defer conn.Close()
+	srv := httptest.NewServer(api.New(conn))
+	defer srv.Close()
+
+	pub := getJSON(t, srv.URL+"/git-twin/pubkey", nil)
+	if pub.StatusCode != 200 {
+		t.Fatalf("pubkey: want 200 got %d body=%s", pub.StatusCode, pub.Body)
+	}
+	if pub.JSON["alg"] != gittwin.AlgEd25519 {
+		t.Fatalf("alg: want %s got %v", gittwin.AlgEd25519, pub.JSON["alg"])
+	}
+	pubB64, _ := pub.JSON["public_key"].(string)
+	decoded, err := base64.StdEncoding.DecodeString(pubB64)
+	if err != nil {
+		t.Fatalf("pubkey b64: %v", err)
+	}
+	want := signer.PublicKey()
+	if len(decoded) != len(want) {
+		t.Fatalf("pubkey size: want %d got %d", len(want), len(decoded))
+	}
+	for i := range want {
+		if decoded[i] != want[i] {
+			t.Fatalf("pubkey bytes diverge at %d", i)
+		}
+	}
+}
+
+// TestGitTwinSetGitTwinDraftOnly verifies the DRAFT-state guard: an owner
+// cannot bind (or rebind) a git twin after the covenant has opened.
+func TestGitTwinSetGitTwinDraftOnly(t *testing.T) {
+	conn, covSvc, _, teardown := setupTwinServer(t, "twin-secret")
+	defer teardown()
+	_ = conn
+
+	cov, _, err := covSvc.Create("X", "code", "github:owner")
+	must(t, err, "create")
+	// DRAFT → allowed
+	if err := covSvc.SetGitTwin(cov.CovenantID, "https://github.com/o/r", "github", ""); err != nil {
+		t.Fatalf("set twin on DRAFT: %v", err)
+	}
+	got, err := covSvc.Get(cov.CovenantID)
+	must(t, err, "get")
+	if got.GitTwinURL != "https://github.com/o/r" || got.GitTwinProvider != "github" {
+		t.Fatalf("twin not persisted: %+v", got)
+	}
+	// Bad provider
+	if err := covSvc.SetGitTwin(cov.CovenantID, "https://x", "weird", ""); err == nil {
+		t.Fatal("invalid provider must error")
+	}
+	// Move past DRAFT
+	must(t, covSvc.AddTier(cov.CovenantID, "t", "T", 1.0, nil), "tier")
+	_, err = covSvc.Transition(cov.CovenantID, "OPEN")
+	must(t, err, "→OPEN")
+	// Post-DRAFT set → must error
+	if err := covSvc.SetGitTwin(cov.CovenantID, "https://other", "github", ""); err == nil {
+		t.Fatal("set twin after OPEN must error")
+	}
+}
+
+// setupTwinServer bootstraps an httptest server with a fresh DB and the
+// ACP_BRIDGE_SECRET env set so /git-twin/* endpoints are active. The returned
+// teardown restores the previous env value.
+func setupTwinServer(t *testing.T, secret string) (*sql.DB, *covenant.Service, *httptest.Server, func()) {
+	t.Helper()
+	dbPath := t.TempDir() + "/twin.db"
+	conn, err := db.Open(dbPath)
+	must(t, err, "open db")
+
+	prev, hadPrev := os.LookupEnv("ACP_BRIDGE_SECRET")
+	os.Setenv("ACP_BRIDGE_SECRET", secret)
+
+	covSvc := covenant.New(conn)
+	srv := httptest.NewServer(api.New(conn))
+
+	teardown := func() {
+		srv.Close()
+		conn.Close()
+		if hadPrev {
+			os.Setenv("ACP_BRIDGE_SECRET", prev)
+		} else {
+			os.Unsetenv("ACP_BRIDGE_SECRET")
+		}
+	}
+	return conn, covSvc, srv, teardown
+}
+
+type jsonResp struct {
+	StatusCode int
+	Body       string
+	JSON       map[string]any
+}
+
+func postJSON(t *testing.T, url string, headers map[string]string, body any) jsonResp {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	must(t, err, "marshal")
+	req, err := http.NewRequest("POST", url, bytes.NewReader(raw))
+	must(t, err, "new request")
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	must(t, err, "do")
+	defer resp.Body.Close()
+	buf, _ := io.ReadAll(resp.Body)
+	out := jsonResp{StatusCode: resp.StatusCode, Body: string(buf)}
+	_ = json.Unmarshal(buf, &out.JSON)
+	return out
+}
+
+func getJSON(t *testing.T, url string, headers map[string]string) jsonResp {
+	t.Helper()
+	req, err := http.NewRequest("GET", url, nil)
+	must(t, err, "new request")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	must(t, err, "do")
+	defer resp.Body.Close()
+	buf, _ := io.ReadAll(resp.Body)
+	out := jsonResp{StatusCode: resp.StatusCode, Body: string(buf)}
+	_ = json.Unmarshal(buf, &out.JSON)
+	return out
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────

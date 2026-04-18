@@ -48,6 +48,10 @@ type Covenant struct {
 	BudgetLimit        int64     `json:"budget_limit"`    // minor units of BudgetCurrency
 	BudgetCurrency     string    `json:"budget_currency"` // ISO 4217; all charges must match
 	CostWeight         float64   `json:"cost_weight"` // ACR-20 §6: net_delta = tokens_delta - cost_weight × cost_delta
+	// ACR-400 Part 1: optional Git Covenant Twin binding. Empty strings mean no twin.
+	GitTwinURL        string `json:"git_twin_url,omitempty"`
+	GitTwinProvider   string `json:"git_twin_provider,omitempty"`
+	GitTwinConfigJSON string `json:"git_twin_config_json,omitempty"`
 	// OwnerToken is populated only in the Create response (shown once, never again).
 	OwnerToken string    `json:"owner_token,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
@@ -261,11 +265,15 @@ func (s *Service) Get(covenantID string) (*Covenant, error) {
 	err := s.db.QueryRow(`
 		SELECT covenant_id, version, space_type, title, description, state,
 		       owner_id, owner_share_pct, platform_share_pct, contributor_pool_pct,
-		       budget_limit, budget_currency, cost_weight, created_at, updated_at
+		       budget_limit, budget_currency, cost_weight,
+		       git_twin_url, git_twin_provider, git_twin_config_json,
+		       created_at, updated_at
 		FROM covenants WHERE covenant_id=?`, covenantID,
 	).Scan(&c.CovenantID, &c.Version, &c.SpaceType, &c.Title, &c.Description, &c.State,
 		&c.OwnerID, &c.OwnerSharePct, &c.PlatformSharePct, &c.ContributorPoolPct,
-		&c.BudgetLimit, &c.BudgetCurrency, &c.CostWeight, &createdStr, &updatedStr)
+		&c.BudgetLimit, &c.BudgetCurrency, &c.CostWeight,
+		&c.GitTwinURL, &c.GitTwinProvider, &c.GitTwinConfigJSON,
+		&createdStr, &updatedStr)
 	if err != nil {
 		return nil, fmt.Errorf("covenant %q: %w", covenantID, err)
 	}
@@ -277,6 +285,82 @@ func (s *Service) Get(covenantID string) (*Covenant, error) {
 		c.UnitName = "Token"
 	}
 	return c, nil
+}
+
+// SetGitTwin binds a covenant to a git repo Digital Twin (ACR-400 Part 1).
+// Allowed only while state=DRAFT; after OPEN the binding is immutable so
+// participants who joined cannot be blindsided by a late-stage rebinding.
+// Pass empty strings to clear the binding (only while DRAFT).
+func (s *Service) SetGitTwin(covenantID, url, provider, configJSON string) error {
+	cov, err := s.Get(covenantID)
+	if err != nil {
+		return err
+	}
+	if cov.State != "DRAFT" {
+		return fmt.Errorf("git twin can only be set while DRAFT (current state: %s)", cov.State)
+	}
+	if url != "" {
+		switch provider {
+		case "github", "gitlab", "gitea", "local-hook":
+		default:
+			return fmt.Errorf("invalid git_twin_provider %q (allowed: github, gitlab, gitea, local-hook)", provider)
+		}
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err = s.db.Exec(`
+		UPDATE covenants SET git_twin_url=?, git_twin_provider=?, git_twin_config_json=?, updated_at=?
+		WHERE covenant_id=?`,
+		url, provider, configJSON, now, covenantID)
+	return err
+}
+
+// FindByGitTwinURL returns the covenant_ids currently bound to the given repo URL.
+// Used by the git bridge (ACR-400 Part 7) to route a webhook to the right covenant.
+// A single repo may be twinned by multiple covenants (ACR-400 Part 1) — caller decides.
+func (s *Service) FindByGitTwinURL(url string) ([]string, error) {
+	if url == "" {
+		return nil, nil
+	}
+	rows, err := s.db.Query(`SELECT covenant_id FROM covenants WHERE git_twin_url=?`, url)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+// FindMemberByPlatformID locates the active member whose platform_id matches
+// in a given covenant. ACR-400 Part 3: the bridge uses this to map a GitHub
+// author to the ACP agent_id. Returns ErrNoMember when no match exists so
+// callers can distinguish "unmapped contribution" from a real lookup error.
+var ErrNoMember = errors.New("no active member with this platform_id")
+
+func (s *Service) FindMemberByPlatformID(covenantID, platformID string) (*Member, error) {
+	m := &Member{}
+	var joinedStr string
+	var tierID sql.NullString
+	err := s.db.QueryRow(`
+		SELECT covenant_id, platform_id, agent_id, COALESCE(tier_id,''), is_owner, status, joined_at
+		FROM covenant_members WHERE covenant_id=? AND platform_id=? AND status='active'`,
+		covenantID, platformID,
+	).Scan(&m.CovenantID, &m.PlatformID, &m.AgentID, &tierID, &m.IsOwner, &m.Status, &joinedStr)
+	if err == sql.ErrNoRows {
+		return nil, ErrNoMember
+	}
+	if err != nil {
+		return nil, err
+	}
+	_ = tierID
+	m.JoinedAt, _ = time.Parse(time.RFC3339Nano, joinedStr)
+	return m, nil
 }
 
 // GetMember returns a CovenantMember by covenant + agent.

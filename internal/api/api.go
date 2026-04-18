@@ -16,6 +16,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 
@@ -23,24 +24,33 @@ import (
 	"github.com/inkmesh/acp-server/internal/budget"
 	"github.com/inkmesh/acp-server/internal/covenant"
 	"github.com/inkmesh/acp-server/internal/execution"
+	"github.com/inkmesh/acp-server/internal/gittwin"
 	"github.com/inkmesh/acp-server/internal/sessions"
 	"github.com/inkmesh/acp-server/tools"
 )
 
 type Server struct {
-	db     *sql.DB
-	covSvc *covenant.Service
-	engine *execution.Engine
-	mux    *http.ServeMux
+	db           *sql.DB
+	covSvc       *covenant.Service
+	engine       *execution.Engine
+	mux          *http.ServeMux
+	anchorSigner gittwin.Signer
 }
 
 func New(db *sql.DB) *Server {
 	covSvc := covenant.New(db)
+	signer, err := gittwin.LoadSignerFromEnv()
+	if err != nil {
+		// A malformed signing key in env is an operator misconfiguration —
+		// bail loud rather than silently fall back to unsigned anchors.
+		log.Fatalf("load anchor signer: %v", err)
+	}
 	s := &Server{
-		db:     db,
-		covSvc: covSvc,
-		engine: execution.New(db, covSvc),
-		mux:    http.NewServeMux(),
+		db:           db,
+		covSvc:       covSvc,
+		engine:       execution.New(db, covSvc),
+		mux:          http.NewServeMux(),
+		anchorSigner: signer,
 	}
 	s.routes()
 	return s
@@ -65,7 +75,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /tools/generate_settlement_output", s.toolHandler(&tools.GenerateSettlement{}))
 	s.mux.HandleFunc("POST /tools/configure_token_rules", s.toolHandler(&tools.ConfigureTokenRules{}))
 	s.mux.HandleFunc("POST /tools/approve_agent", s.toolHandler(&tools.ApproveAgent{}))
-	s.mux.HandleFunc("POST /tools/confirm_settlement_output", s.toolHandler(&tools.ConfirmSettlementOutput{}))
+	s.mux.HandleFunc("POST /tools/confirm_settlement_output", s.toolHandler(&tools.ConfirmSettlementOutput{AnchorSigner: s.anchorSigner}))
 	s.mux.HandleFunc("POST /tools/leave_covenant", s.toolHandler(&tools.LeaveCovenant{}))
 
 	// ── Phase 2 admin tools (X-Owner-Token auth) ─────────────────────────────
@@ -88,6 +98,15 @@ func (s *Server) routes() {
 	// ── Session tokens (REVIEW-14) ────────────────────────────────────────────
 	s.mux.HandleFunc("POST /sessions/issue", s.handleIssueToken)
 	s.mux.HandleFunc("POST /sessions/rotate", s.handleRotateToken)
+
+	// ── Git Twin (ACR-400) ────────────────────────────────────────────────────
+	s.mux.HandleFunc("POST /covenants/{covenant_id}/git-twin", s.handleSetGitTwin)
+	s.mux.HandleFunc("POST /git-twin/merge", s.handleGitTwinMerge)
+	s.mux.HandleFunc("GET /git-twin/covenants", s.handleGitTwinFindCovenants)
+	s.mux.HandleFunc("POST /git-twin/event", s.handleGitTwinRecordEvent)
+	s.mux.HandleFunc("GET /git-twin/anchors/pending", s.handleGitTwinListPendingAnchors)
+	s.mux.HandleFunc("POST /git-twin/anchors/{anchor_id}/ack", s.handleGitTwinAckAnchor)
+	s.mux.HandleFunc("GET /git-twin/pubkey", s.handleGitTwinPubkey)
 }
 
 // ── Auth helpers ─────────────────────────────────────────────────────────────

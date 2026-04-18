@@ -2,15 +2,23 @@ package tools
 
 import (
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/inkmesh/acp-server/internal/audit"
 	"github.com/inkmesh/acp-server/internal/execution"
+	"github.com/inkmesh/acp-server/internal/gittwin"
 )
 
 // ConfirmSettlementOutput confirms a pending settlement output and transitions
 // the Covenant from LOCKED to SETTLED. Owner-only admin tool.
-type ConfirmSettlementOutput struct{}
+//
+// AnchorSigner is optional: when set, every anchor enqueued here is signed
+// with that key before the bridge writes it. Leaving it nil produces
+// unsigned anchors, which ACR-400 v0.2 permits for v0.1-compat deployments.
+type ConfirmSettlementOutput struct {
+	AnchorSigner gittwin.Signer
+}
 
 func (t *ConfirmSettlementOutput) ToolName() string { return "confirm_settlement_output" }
 func (t *ConfirmSettlementOutput) ToolType() string { return "admin" }
@@ -80,6 +88,19 @@ func (t *ConfirmSettlementOutput) ApplySideEffects(ctx *execution.Context, _ *au
 	if _, err = ctx.CovenantSvc.Transition(ctx.Covenant.CovenantID, "SETTLED"); err != nil {
 		return fmt.Errorf("covenant transition to SETTLED: %w", err)
 	}
+
+	// ACR-400 Part 5: enqueue a Git Anchor so the bridge can pin this settlement
+	// into the twinned repo's refs/notes/acp-anchors. Failure to enqueue is a
+	// soft error: settlement already landed in the ledger, and the anchor is a
+	// best-effort amplifier rather than a correctness guarantee. Log + carry on.
+	if ctx.Covenant.GitTwinURL != "" {
+		anchor, aerr := gittwin.EnqueueAnchor(ctx.DB, ctx.Covenant.CovenantID, ctx.Covenant.GitTwinURL, outputID, t.AnchorSigner)
+		if aerr != nil {
+			log.Printf("enqueue git anchor for %s/%s: %v", ctx.Covenant.CovenantID, outputID, aerr)
+		} else {
+			result["anchor_id"] = anchor.AnchorID
+		}
+	}
 	return nil
 }
 
@@ -87,4 +108,7 @@ func (t *ConfirmSettlementOutput) EnrichReceipt(receipt *execution.Receipt, resu
 	receipt.Extra["status"] = result["status"]
 	receipt.Extra["confirmed_at"] = result["confirmed_at"]
 	receipt.Extra["settlement_output_id"] = result["settlement_output_id"]
+	if aid, ok := result["anchor_id"].(string); ok && aid != "" {
+		receipt.Extra["anchor_id"] = aid
+	}
 }
