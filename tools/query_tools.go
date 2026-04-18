@@ -22,3 +22,11 @@ type GetTokenHistory struct{}
 
 func (t *GetTokenHistory) ToolName() string { return "get_token_history" }
 func (t *GetTokenHistory) ToolType() string { return "query" }
+
+// GetConcentrationStatus is a metadata stub for the owner-only Layer 5 query
+// that surfaces token concentration across covenant members (ACR-20 Part 4).
+// Query runs in api.go handleGetConcentrationStatus.
+type GetConcentrationStatus struct{}
+
+func (t *GetConcentrationStatus) ToolName() string { return "get_concentration_status" }
+func (t *GetConcentrationStatus) ToolType() string { return "query" }

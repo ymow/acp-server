@@ -48,6 +48,7 @@ func TestToolsListAllTen(t *testing.T) {
 		"get_token_balance",
 		"list_members",
 		"get_token_history",
+		"get_concentration_status",
 		"leave_covenant",
 	}
 

@@ -1752,6 +1752,148 @@ func TestRateLimitPerHour(t *testing.T) {
 	// non-clause tools, that would have failed.)
 }
 
+// TestConcentrationWarning exercises ACR-20 Part 4 Layer 5 end-to-end: after
+// one agent's confirmed token share crosses concentration_warn_pct, the very
+// next approve_draft receipt must carry a warnings list identifying that
+// agent. The warning is a signal, not a gate — approvals still succeed.
+func TestConcentrationWarning(t *testing.T) {
+	conn, err := db.Open(t.TempDir() + "/concentration_e2e.db")
+	must(t, err, "open db")
+	defer conn.Close()
+
+	covSvc := covenant.New(conn)
+	engine := execution.New(conn, covSvc)
+
+	cov, ownerMem, err := covSvc.Create("Concentration test", "book", "pid_cw_owner")
+	must(t, err, "create covenant")
+	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil), "add tier")
+	_, err = covSvc.Transition(cov.CovenantID, "OPEN")
+	must(t, err, "→OPEN")
+
+	agentA, err := covSvc.Join(cov.CovenantID, "pid_cw_a", "contributor")
+	must(t, err, "join A")
+	agentB, err := covSvc.Join(cov.CovenantID, "pid_cw_b", "contributor")
+	must(t, err, "join B")
+
+	_, err = covSvc.Transition(cov.CovenantID, "ACTIVE")
+	must(t, err, "→ACTIVE")
+
+	_, err = engine.Run(cov.CovenantID, ownerMem.AgentID, "sess_owner",
+		&tools.ApproveAgent{}, map[string]any{"agent_id": agentA.AgentID})
+	must(t, err, "approve A")
+	_, err = engine.Run(cov.CovenantID, ownerMem.AgentID, "sess_owner",
+		&tools.ApproveAgent{}, map[string]any{"agent_id": agentB.AgentID})
+	must(t, err, "approve B")
+
+	// Threshold 40%, rate limit disabled — concentration warning is what we
+	// are measuring, rate limiting would only confuse the scenario.
+	_, err = engine.Run(cov.CovenantID, ownerMem.AgentID, "sess_owner",
+		&tools.ConfigureAntiGaming{}, map[string]any{
+			"rate_limit_per_hour":    0,
+			"concentration_warn_pct": 40.0,
+		})
+	must(t, err, "configure_anti_gaming")
+
+	// Agent A proposes a passage worth 800 tokens.
+	_, err = engine.Run(cov.CovenantID, agentA.AgentID, "sess_a",
+		&tools.ProposePassage{}, map[string]any{"unit_count": 800})
+	must(t, err, "A propose_passage")
+	draftA := getDraftID(t, conn, cov.CovenantID, agentA.AgentID)
+
+	// First approval: only A has tokens (800/800 = 100%), well above 40% →
+	// receipt must carry a warning naming agent A.
+	receipt, err := engine.Run(cov.CovenantID, ownerMem.AgentID, "sess_owner",
+		&tools.ApproveDraft{}, map[string]any{
+			"draft_id":   draftA,
+			"unit_count": 800,
+		})
+	must(t, err, "approve A")
+	warnings := extractConcentrationAgents(t, receipt, "A approve_draft")
+	if len(warnings) != 1 || warnings[0] != agentA.AgentID {
+		t.Fatalf("A approve: want warning on %q, got %v", agentA.AgentID, warnings)
+	}
+
+	// Agent B now proposes 200 tokens → confirmed split 800/200, A share 80%.
+	_, err = engine.Run(cov.CovenantID, agentB.AgentID, "sess_b",
+		&tools.ProposePassage{}, map[string]any{"unit_count": 200})
+	must(t, err, "B propose_passage")
+	draftB := getDraftID(t, conn, cov.CovenantID, agentB.AgentID)
+
+	receipt, err = engine.Run(cov.CovenantID, ownerMem.AgentID, "sess_owner",
+		&tools.ApproveDraft{}, map[string]any{
+			"draft_id":   draftB,
+			"unit_count": 200,
+		})
+	must(t, err, "approve B")
+	warnings = extractConcentrationAgents(t, receipt, "B approve_draft")
+	if len(warnings) != 1 || warnings[0] != agentA.AgentID {
+		t.Fatalf("B approve: A at 80%% should still trigger warning, got %v", warnings)
+	}
+	if tot, _ := receipt.Extra["concentration_total"].(int); tot != 1000 {
+		t.Errorf("concentration_total: got %v want 1000", receipt.Extra["concentration_total"])
+	}
+
+	// Raise threshold above current concentration — next approval's receipt
+	// must come back clean. Proves the check is live on every call, not a
+	// one-shot sticky flag.
+	_, err = engine.Run(cov.CovenantID, ownerMem.AgentID, "sess_owner",
+		&tools.ConfigureAntiGaming{}, map[string]any{
+			"rate_limit_per_hour":    0,
+			"concentration_warn_pct": 90.0,
+		})
+	must(t, err, "raise threshold")
+
+	_, err = engine.Run(cov.CovenantID, agentB.AgentID, "sess_b",
+		&tools.ProposePassage{}, map[string]any{"unit_count": 50})
+	must(t, err, "B second propose")
+	draftB2 := getDraftID(t, conn, cov.CovenantID, agentB.AgentID)
+	receipt, err = engine.Run(cov.CovenantID, ownerMem.AgentID, "sess_owner",
+		&tools.ApproveDraft{}, map[string]any{
+			"draft_id":   draftB2,
+			"unit_count": 50,
+		})
+	must(t, err, "approve B2")
+	if _, present := receipt.Extra["concentration_warnings"]; present {
+		t.Errorf("threshold=90%%, A at ~76%% → no warning expected, got %v", receipt.Extra["concentration_warnings"])
+	}
+
+	// Audit chain integrity — concentration work must not corrupt hash linkage.
+	valid, violations := audit.VerifyChain(conn, cov.CovenantID)
+	if !valid {
+		t.Errorf("hash chain broken: %v", violations)
+	}
+}
+
+// extractConcentrationAgents pulls the agent_ids out of
+// receipt.Extra["concentration_warnings"]. The engine stores the slice as
+// []ratelimit.ConcentrationEntry via the result map; we assert on agent_id
+// so the helper stays decoupled from the ratelimit package layout.
+func extractConcentrationAgents(t *testing.T, receipt *execution.Receipt, label string) []string {
+	t.Helper()
+	raw, ok := receipt.Extra["concentration_warnings"]
+	if !ok {
+		return nil
+	}
+	// ratelimit.ConcentrationEntry is the concrete type; reflect via JSON to
+	// avoid importing ratelimit here (acp_test is the top-level integration
+	// layer and already carries plenty of dependencies).
+	buf, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatalf("%s: marshal warnings: %v", label, err)
+	}
+	var decoded []struct {
+		AgentID string `json:"agent_id"`
+	}
+	if err := json.Unmarshal(buf, &decoded); err != nil {
+		t.Fatalf("%s: unmarshal warnings: %v", label, err)
+	}
+	agents := make([]string, 0, len(decoded))
+	for _, e := range decoded {
+		agents = append(agents, e.AgentID)
+	}
+	return agents
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 func must(t *testing.T, err error, label string) {

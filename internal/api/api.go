@@ -25,6 +25,7 @@ import (
 	"github.com/inkmesh/acp-server/internal/covenant"
 	"github.com/inkmesh/acp-server/internal/execution"
 	"github.com/inkmesh/acp-server/internal/gittwin"
+	"github.com/inkmesh/acp-server/internal/ratelimit"
 	"github.com/inkmesh/acp-server/internal/sessions"
 	"github.com/inkmesh/acp-server/tools"
 )
@@ -87,6 +88,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /tools/get_token_balance", s.handleGetTokenBalance)
 	s.mux.HandleFunc("POST /tools/list_members", s.handleListMembers)
 	s.mux.HandleFunc("POST /tools/get_token_history", s.handleGetTokenHistory)
+	s.mux.HandleFunc("POST /tools/get_concentration_status", s.handleGetConcentrationStatus)
 
 	// ── Audit & verification ─────────────────────────────────────────────────
 	s.mux.HandleFunc("GET /covenants/{covenant_id}/audit/verify", s.handleVerifyChain)
@@ -609,6 +611,52 @@ func (s *Server) handleListMembers(w http.ResponseWriter, r *http.Request) {
 		members = []memberRow{}
 	}
 	jsonOK(w, map[string]any{"members": members})
+}
+
+// handleGetConcentrationStatus returns the full ACR-20 Part 4 Layer 5 report
+// for a covenant: threshold, total confirmed tokens, per-agent shares, and the
+// warnings subset. Owner-only — concentration data exposes each member's
+// relative position in the pool and is not general-participant information.
+func (s *Server) handleGetConcentrationStatus(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Params struct {
+			CovenantID string `json:"covenant_id"`
+		} `json:"params"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	covenantID := body.Params.CovenantID
+	if covenantID == "" {
+		jsonError(w, "covenant_id is required", http.StatusBadRequest)
+		return
+	}
+	if err := s.validateOwnerToken(r, covenantID); err != nil {
+		jsonError(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	report, err := ratelimit.CheckConcentration(s.db, covenantID)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// Normalise empty slices to JSON arrays so clients can iterate without
+	// null-guarding. The domain report uses nil to signal "no data".
+	entries := report.Entries
+	if entries == nil {
+		entries = []ratelimit.ConcentrationEntry{}
+	}
+	warnings := report.Warnings
+	if warnings == nil {
+		warnings = []ratelimit.ConcentrationEntry{}
+	}
+	jsonOK(w, map[string]any{
+		"threshold_pct": report.Threshold,
+		"total_tokens":  report.Total,
+		"entries":       entries,
+		"warnings":      warnings,
+	})
 }
 
 // ── Audit handlers ───────────────────────────────────────────────────────────

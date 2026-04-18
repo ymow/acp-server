@@ -5,6 +5,7 @@ import (
 
 	"github.com/inkmesh/acp-server/internal/audit"
 	"github.com/inkmesh/acp-server/internal/execution"
+	"github.com/inkmesh/acp-server/internal/ratelimit"
 	"github.com/inkmesh/acp-server/internal/tokens"
 )
 
@@ -128,6 +129,28 @@ func (t *ApproveDraft) CalculateSideEffects(ctx *execution.Context, result map[s
 func (t *ApproveDraft) ApplySideEffects(ctx *execution.Context, log *audit.Entry, effects execution.SideEffects, result map[string]any, _ map[string]any) error {
 	proposerAgentID, _ := result["proposer_agent_id"].(string)
 	draftID, _ := result["draft_id"].(string)
-	return tokens.ConfirmContribution(ctx.DB, ctx.Covenant.CovenantID, proposerAgentID, log.LogID, draftID, effects.TokensDelta)
+	if err := tokens.ConfirmContribution(ctx.DB, ctx.Covenant.CovenantID, proposerAgentID, log.LogID, draftID, effects.TokensDelta); err != nil {
+		return err
+	}
+	// ACR-20 Part 4 Layer 5: concentration check runs *after* the ledger write
+	// so the fresh award is reflected in the report. Failure to compute the
+	// report is non-fatal — a transient warning miss must not block approval.
+	if report, err := ratelimit.CheckConcentration(ctx.DB, ctx.Covenant.CovenantID); err == nil && len(report.Warnings) > 0 {
+		result["concentration_warnings"] = report.Warnings
+		result["concentration_total"] = report.Total
+	}
+	return nil
+}
+
+// EnrichReceipt surfaces concentration warnings on the receipt when the
+// just-applied token award pushed an agent above concentration_warn_pct.
+// Owners see this in their tool response without needing a separate query.
+func (t *ApproveDraft) EnrichReceipt(receipt *execution.Receipt, result map[string]any) {
+	if w, ok := result["concentration_warnings"]; ok {
+		receipt.Extra["concentration_warnings"] = w
+	}
+	if total, ok := result["concentration_total"]; ok {
+		receipt.Extra["concentration_total"] = total
+	}
 }
 

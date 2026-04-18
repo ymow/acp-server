@@ -62,9 +62,10 @@ type toolDef struct {
 
 // ownerTools is the set of tools that require X-Owner-Token auth.
 var ownerTools = map[string]bool{
-	"reject_agent":  true,
-	"reject_draft":  true,
-	"list_members":  true,
+	"reject_agent":             true,
+	"reject_draft":             true,
+	"list_members":             true,
+	"get_concentration_status": true,
 }
 
 // routingProps are shared fields present on every tool's inputSchema.
@@ -265,6 +266,11 @@ var allTools = []toolDef{
 		}, nil),
 	},
 	{
+		Name:        "get_concentration_status",
+		Description: "Return the ACR-20 Part 4 Layer 5 concentration report: threshold, total confirmed tokens, per-agent share, and the subset exceeding concentration_warn_pct. Owner-only.",
+		InputSchema: makeSchema(map[string]any{}, nil),
+	},
+	{
 		Name:        "leave_covenant",
 		Description: "Mark the calling agent as having left the covenant. Confirmed token entries are preserved. Owner cannot leave.",
 		InputSchema: makeSchema(map[string]any{
@@ -432,6 +438,10 @@ func handleToolCall(cfg config, raw json.RawMessage) (toolCallResult, error) {
 			params["agent_id"] = agentID
 		}
 	case "list_members":
+		if _, ok := params["covenant_id"]; !ok {
+			params["covenant_id"] = covenantID
+		}
+	case "get_concentration_status":
 		if _, ok := params["covenant_id"]; !ok {
 			params["covenant_id"] = covenantID
 		}
