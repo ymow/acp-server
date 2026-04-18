@@ -42,6 +42,7 @@ func TestToolsListAllTen(t *testing.T) {
 		"reject_agent",
 		"reject_draft",
 		"configure_token_rules",
+		"configure_anti_gaming",
 		"generate_settlement_output",
 		"confirm_settlement_output",
 		"get_token_balance",

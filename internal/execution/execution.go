@@ -9,6 +9,7 @@ import (
 	"github.com/inkmesh/acp-server/internal/audit"
 	"github.com/inkmesh/acp-server/internal/budget"
 	"github.com/inkmesh/acp-server/internal/covenant"
+	"github.com/inkmesh/acp-server/internal/ratelimit"
 )
 
 // SideEffects carries the computed outputs of Step 4.
@@ -145,6 +146,17 @@ func (e *Engine) Run(covenantID, agentID, sessionID string, tool Tool, params ma
 	}
 
 	ctx := &Context{Covenant: cov, Member: mem, DB: e.db, CovenantSvc: e.cov}
+
+	// ── Step 1.5: Rate limit gate (ACR-20 Part 4 Layer 2) ─────────────────
+	// Only clause tools are counted — admin / query tools are exempt by
+	// protocol design (Trust Layer 1 treats owners as trusted). A rejection
+	// here is recorded in the audit chain so operators can see abuse patterns.
+	if tool.ToolType() == "clause" {
+		if err := ratelimit.CheckAndIncrement(e.db, covenantID, agentID, tool.ToolName()); err != nil {
+			e.logRejection(covenantID, agentID, sessionID, tool, params, cov.State, err.Error())
+			return nil, fmt.Errorf("step1.5: %w", err)
+		}
+	}
 
 	// ── Step 2: Pre-condition check ────────────────────────────────────────
 	if err := tool.CheckPreconditions(ctx, params); err != nil {

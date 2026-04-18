@@ -200,6 +200,28 @@ var allTools = []toolDef{
 		}, []string{"rules"}),
 	},
 	{
+		Name:        "configure_anti_gaming",
+		Description: "Set the AntiGamingPolicy for a covenant (ACR-20 Part 4). Phase 4.1 enforces rate_limit_per_hour only; other fields are accepted and reserved. Owner-only; allowed while DRAFT, OPEN, or ACTIVE.",
+		InputSchema: makeSchema(map[string]any{
+			"rate_limit_per_hour": map[string]any{
+				"type":        "integer",
+				"description": "Max clause-tool calls per agent per hour. 0 = unlimited (required).",
+			},
+			"similarity_threshold": map[string]any{
+				"type":        "number",
+				"description": "Reserved (Phase 4+). 0.0-1.0 similarity ceiling for duplicate detection.",
+			},
+			"min_word_count": map[string]any{
+				"type":        "integer",
+				"description": "Reserved (Phase 4+). Minimum unit_count below which submissions do not earn tokens.",
+			},
+			"concentration_warn_pct": map[string]any{
+				"type":        "number",
+				"description": "Reserved (Phase 4.3). Warn owner when a single agent's tokens exceed this share of total.",
+			},
+		}, []string{"rate_limit_per_hour"}),
+	},
+	{
 		Name:        "generate_settlement_output",
 		Description: "Trigger settlement output generation for a LOCKED or ACTIVE covenant. Owner-only.",
 		InputSchema: makeSchema(map[string]any{}, nil),

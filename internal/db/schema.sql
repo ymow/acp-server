@@ -210,3 +210,29 @@ CREATE TABLE IF NOT EXISTS git_twin_anchors (
 );
 CREATE INDEX IF NOT EXISTS idx_git_twin_anchors_status ON git_twin_anchors(status, enqueued_at);
 CREATE INDEX IF NOT EXISTS idx_git_twin_anchors_covenant ON git_twin_anchors(covenant_id);
+
+-- ── Anti-Gaming Policy (ACR-20 Part 4) ────────────────────────────────────
+-- One row per covenant. Owner-configured via configure_anti_gaming tool.
+-- Phase 4.1 populates rate_limit_per_hour only; later chunks add the rest.
+CREATE TABLE IF NOT EXISTS anti_gaming_policies (
+  covenant_id             TEXT PRIMARY KEY REFERENCES covenants(covenant_id),
+  rate_limit_per_hour     INTEGER NOT NULL DEFAULT 0,   -- 0 = unlimited (Layer 2)
+  similarity_threshold    REAL    NOT NULL DEFAULT 0.0, -- Layer 3, Phase 4+
+  min_word_count          INTEGER NOT NULL DEFAULT 0,   -- Layer 4, Phase 4+
+  concentration_warn_pct  REAL    NOT NULL DEFAULT 0.0, -- Layer 5, Phase 4.3
+  updated_at              TEXT NOT NULL
+);
+
+-- ── Rate-Limit Counters (ACR-20 Part 4 Layer 2) ───────────────────────────
+-- Per (covenant, agent, tool, hour-window) bucket. Phase 4.1 writes every
+-- clause-tool call to tool_name='*' (global bucket); tool_name column kept
+-- for future per-tool policies without migration.
+CREATE TABLE IF NOT EXISTS rate_limit_counters (
+  covenant_id   TEXT NOT NULL,
+  agent_id      TEXT NOT NULL,
+  tool_name     TEXT NOT NULL,   -- '*' = global bucket (Phase 4.1 default)
+  window_start  TEXT NOT NULL,   -- RFC3339 UTC, floored to the hour
+  call_count    INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (covenant_id, agent_id, tool_name, window_start)
+);
+CREATE INDEX IF NOT EXISTS idx_ratelimit_cleanup ON rate_limit_counters(window_start);

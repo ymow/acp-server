@@ -74,6 +74,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /tools/approve_draft", s.toolHandler(&tools.ApproveDraft{}))
 	s.mux.HandleFunc("POST /tools/generate_settlement_output", s.toolHandler(&tools.GenerateSettlement{}))
 	s.mux.HandleFunc("POST /tools/configure_token_rules", s.toolHandler(&tools.ConfigureTokenRules{}))
+	s.mux.HandleFunc("POST /tools/configure_anti_gaming", s.toolHandler(&tools.ConfigureAntiGaming{}))
 	s.mux.HandleFunc("POST /tools/approve_agent", s.toolHandler(&tools.ApproveAgent{}))
 	s.mux.HandleFunc("POST /tools/confirm_settlement_output", s.toolHandler(&tools.ConfirmSettlementOutput{AnchorSigner: s.anchorSigner}))
 	s.mux.HandleFunc("POST /tools/leave_covenant", s.toolHandler(&tools.LeaveCovenant{}))
