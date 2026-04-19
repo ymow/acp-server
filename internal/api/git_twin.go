@@ -130,12 +130,16 @@ func (s *Server) handleGitTwinMerge(w http.ResponseWriter, r *http.Request) {
 	// Author mapping (ACR-400 Part 3). Unmapped → audit-only, no ledger effect.
 	author, err := s.covSvc.FindMemberByPlatformID(req.CovenantID, req.AuthorPlatformID)
 	if errors.Is(err, covenant.ErrNoMember) {
+		// ACR-700 §4: do not echo the plaintext author back to the bridge.
+		// A 12-char hash prefix is enough for the bridge to correlate this
+		// response with the webhook it forwarded.
+		hash := covenant.HashPlatformID(req.AuthorPlatformID)
 		jsonOK(w, map[string]any{
-			"unmapped":     true,
-			"author":       req.AuthorPlatformID,
-			"covenant_id":  req.CovenantID,
-			"draft_ref":    req.DraftRef,
-			"detail":       "contributor is not an approved covenant member; ledger untouched",
+			"unmapped":                 true,
+			"author_hash_prefix":       hash[:12],
+			"covenant_id":              req.CovenantID,
+			"draft_ref":                req.DraftRef,
+			"detail":                   "contributor is not an approved covenant member; ledger untouched",
 		})
 		return
 	}

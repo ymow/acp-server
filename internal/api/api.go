@@ -610,11 +610,13 @@ func (s *Server) handleListMembers(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := s.db.Query(`
 		SELECT m.agent_id, m.status, COALESCE(m.tier_id,''), m.joined_at,
-		       COALESCE(SUM(CASE WHEN l.status='confirmed' THEN l.delta ELSE 0 END), 0)
+		       COALESCE(SUM(CASE WHEN l.status='confirmed' THEN l.delta ELSE 0 END), 0),
+		       COALESCE(pi.platform_id_hash, '')
 		FROM covenant_members m
 		LEFT JOIN token_ledger l ON l.covenant_id=m.covenant_id AND l.agent_id=m.agent_id
+		LEFT JOIN platform_identities pi ON pi.platform_id = m.platform_id
 		WHERE m.covenant_id=?
-		GROUP BY m.agent_id, m.status, m.tier_id, m.joined_at`,
+		GROUP BY m.agent_id, m.status, m.tier_id, m.joined_at, pi.platform_id_hash`,
 		covenantID,
 	)
 	if err != nil {
@@ -623,19 +625,29 @@ func (s *Server) handleListMembers(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
+	// ACR-700 §4: surface a 12-char platform_id_hash prefix instead of the
+	// plaintext platform_id. The owner can correlate across covenants without
+	// the server ever returning the full identifier.
 	type memberRow struct {
-		AgentID         string `json:"agent_id"`
-		Status          string `json:"status"`
-		TierID          string `json:"tier_id,omitempty"`
-		JoinedAt        string `json:"joined_at"`
-		ConfirmedTokens int    `json:"confirmed_tokens"`
+		AgentID              string `json:"agent_id"`
+		Status               string `json:"status"`
+		TierID               string `json:"tier_id,omitempty"`
+		JoinedAt             string `json:"joined_at"`
+		ConfirmedTokens      int    `json:"confirmed_tokens"`
+		PlatformIDHashPrefix string `json:"platform_id_hash_prefix,omitempty"`
 	}
 	var members []memberRow
 	for rows.Next() {
-		var m memberRow
-		if err := rows.Scan(&m.AgentID, &m.Status, &m.TierID, &m.JoinedAt, &m.ConfirmedTokens); err != nil {
+		var (
+			m    memberRow
+			hash string
+		)
+		if err := rows.Scan(&m.AgentID, &m.Status, &m.TierID, &m.JoinedAt, &m.ConfirmedTokens, &hash); err != nil {
 			jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		if len(hash) >= 12 {
+			m.PlatformIDHashPrefix = hash[:12]
 		}
 		members = append(members, m)
 	}

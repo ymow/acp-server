@@ -43,7 +43,7 @@ func BackfillPlatformIdentities(db *sql.DB, sealer *crypto.Sealer) (int, error) 
 
 	updated := 0
 	for _, pid := range legacy {
-		hash := hashPlatformID(pid)
+		hash := HashPlatformID(pid)
 		var enc []byte
 		if sealer != nil {
 			blob, err := sealer.Seal(hash, "platform_id", []byte(pid))

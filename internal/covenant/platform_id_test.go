@@ -3,8 +3,11 @@ package covenant
 import (
 	"bytes"
 	"database/sql"
+	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	acpcrypto "github.com/inkmesh/acp-server/internal/crypto"
 	acpdb "github.com/inkmesh/acp-server/internal/db"
@@ -32,15 +35,15 @@ func newTestSealer(t *testing.T) *acpcrypto.Sealer {
 }
 
 func TestHashPlatformIDDeterministic(t *testing.T) {
-	a := hashPlatformID("github:octocat")
-	b := hashPlatformID("github:octocat")
+	a := HashPlatformID("github:octocat")
+	b := HashPlatformID("github:octocat")
 	if a != b {
 		t.Fatalf("not deterministic: %q vs %q", a, b)
 	}
 	if len(a) != 64 {
 		t.Fatalf("hash length = %d, want 64 hex chars", len(a))
 	}
-	if hashPlatformID("github:alice") == hashPlatformID("github:bob") {
+	if HashPlatformID("github:alice") == HashPlatformID("github:bob") {
 		t.Fatal("expected different hashes for different inputs")
 	}
 }
@@ -65,7 +68,7 @@ func TestCreatePopulatesHashAndEnc(t *testing.T) {
 		t.Fatalf("scan row: %v", err)
 	}
 
-	wantHash := hashPlatformID("github:alice")
+	wantHash := HashPlatformID("github:alice")
 	if hash != wantHash {
 		t.Errorf("hash mismatch: got %q, want %q", hash, wantHash)
 	}
@@ -101,7 +104,7 @@ func TestCreateWithoutSealerLeavesEncNull(t *testing.T) {
 	if err := row.Scan(&hash, &enc); err != nil {
 		t.Fatalf("scan row: %v", err)
 	}
-	if hash != hashPlatformID("github:nobody") {
+	if hash != HashPlatformID("github:nobody") {
 		t.Errorf("hash not written without sealer: %q", hash)
 	}
 	if enc.Valid {
@@ -135,7 +138,7 @@ func TestBackfillHydratesLegacyRows(t *testing.T) {
 	if err := row.Scan(&hash, &enc); err != nil {
 		t.Fatalf("post-backfill scan: %v", err)
 	}
-	if hash != hashPlatformID("github:legacy") {
+	if hash != HashPlatformID("github:legacy") {
 		t.Errorf("post-backfill hash mismatch: %q", hash)
 	}
 	if len(enc) == 0 {
@@ -149,6 +152,31 @@ func TestBackfillHydratesLegacyRows(t *testing.T) {
 	}
 	if n2 != 0 {
 		t.Errorf("second backfill updated %d rows, want 0 (idempotency)", n2)
+	}
+}
+
+// ACR-700 §4: Member JSON must not surface plaintext platform_id. The field
+// stays on the struct for internal joins but is tagged json:"-". Any future
+// change that reintroduces the key (typo, rename, struct copy) must fail here.
+func TestMemberJSONOmitsPlatformID(t *testing.T) {
+	m := Member{
+		CovenantID: "cov_1",
+		PlatformID: "github:should-never-appear",
+		AgentID:    "agt_1",
+		TierID:     "tier_x",
+		Status:     "active",
+		JoinedAt:   time.Unix(0, 0).UTC(),
+	}
+	blob, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	s := string(blob)
+	if strings.Contains(s, "github:should-never-appear") {
+		t.Errorf("plaintext platform_id leaked into Member JSON: %s", s)
+	}
+	if strings.Contains(s, `"platform_id"`) {
+		t.Errorf("platform_id key present in Member JSON: %s", s)
 	}
 }
 

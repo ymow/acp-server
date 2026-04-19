@@ -29,6 +29,11 @@ func (t *RecordGitTwinEvent) ToolType() string { return "query" }
 // Surface the semantic fields in the audit preview so verifiers can
 // reconstruct the git context without loading the raw webhook payload.
 // summary and source_ref are free-form annotations the bridge fills in.
+//
+// actor_platform_id is kept in the preview whitelist so the audit row
+// signals "who did this" to a verifier, but ACR-700 §4 requires that
+// plaintext never land in the durable log. SensitiveFields replaces the
+// value with "*** (length: N)" — same shape as other sensitive fields.
 func (t *RecordGitTwinEvent) ParamsPolicy() execution.ParamsPolicy {
 	return execution.ParamsPolicy{
 		PreviewFields: []string{
@@ -39,6 +44,7 @@ func (t *RecordGitTwinEvent) ParamsPolicy() execution.ParamsPolicy {
 			"summary",
 			"source_ref",
 		},
+		SensitiveFields: []string{"actor_platform_id"},
 	}
 }
 
