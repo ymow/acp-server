@@ -23,8 +23,10 @@ import (
 	"github.com/inkmesh/acp-server/internal/audit"
 	"github.com/inkmesh/acp-server/internal/budget"
 	"github.com/inkmesh/acp-server/internal/covenant"
+	acpcrypto "github.com/inkmesh/acp-server/internal/crypto"
 	"github.com/inkmesh/acp-server/internal/execution"
 	"github.com/inkmesh/acp-server/internal/gittwin"
+	"github.com/inkmesh/acp-server/internal/keys"
 	"github.com/inkmesh/acp-server/internal/ratelimit"
 	"github.com/inkmesh/acp-server/internal/sessions"
 	"github.com/inkmesh/acp-server/tools"
@@ -40,6 +42,36 @@ type Server struct {
 
 func New(db *sql.DB) *Server {
 	covSvc := covenant.New(db)
+
+	// ACR-700 Phase 4.5: wire the LocalKeyfileProvider so platform_id writes
+	// populate platform_id_enc and the startup backfill pass hydrates any
+	// legacy rows inserted before Phase 4.5 landed. A missing key file is
+	// auto-generated with a one-shot fingerprint warning (§3.2); a malformed
+	// key or loose permissions aborts startup.
+	keyProvider, err := keys.NewLocalKeyfileProvider("")
+	if err != nil {
+		log.Fatalf("load acp master key: %v", err)
+	}
+	if keyProvider.WasFirstStart() {
+		log.Printf("═══════════════════════════════════════════════════════════════")
+		log.Printf("  ACP: new master key generated")
+		log.Printf("  path:        %s", keyProvider.Path())
+		log.Printf("  fingerprint: %s", keyProvider.Fingerprint())
+		log.Printf("  ACTION:      Back up this file offline. Loss is permanent")
+		log.Printf("               and every platform_id_enc in this database")
+		log.Printf("               becomes unreadable.")
+		log.Printf("═══════════════════════════════════════════════════════════════")
+	} else {
+		log.Printf("acp master key loaded (fingerprint: %s)", keyProvider.Fingerprint())
+	}
+	sealer := acpcrypto.NewSealer(keyProvider)
+	covSvc.SetSealer(sealer)
+	if n, err := covenant.BackfillPlatformIdentities(db, sealer); err != nil {
+		log.Fatalf("backfill platform_identities: %v", err)
+	} else if n > 0 {
+		log.Printf("acp backfill: hydrated platform_id_hash/enc for %d legacy row(s)", n)
+	}
+
 	signer, err := gittwin.LoadSignerFromEnv()
 	if err != nil {
 		// A malformed signing key in env is an operator misconfiguration —

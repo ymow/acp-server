@@ -16,10 +16,17 @@
 //
 // AAD passed to the cipher is the string literal:
 //
-//	"acp-server|" + covenant_id + "|" + column_name
+//	"acp-server|" + row_id + "|" + column_name
 //
 // Binding the row identity into the AAD prevents cut-and-paste of one row's
 // ciphertext into another row — AEAD authentication fails on mismatch.
+//
+// ACR-700 §2.3 names the middle field covenant_id because the motivating
+// table (covenant_members) is per-covenant. This implementation generalizes
+// the name to row_id: callers pick whatever string uniquely identifies
+// the row within its table. For global tables such as platform_identities
+// (keyed by platform_id), callers pass platform_id_hash. To be folded
+// back into ACR-700 v0.2 as a wording clarification.
 package crypto
 
 import (
@@ -68,10 +75,10 @@ func NewSealer(provider keys.KeyProvider) *Sealer {
 }
 
 // Seal encrypts plaintext under the provider's current key, binding the result
-// to (covenantID, column) via the AAD. The returned blob carries the ACR-700
+// to (rowID, column) via the AAD. The returned blob carries the ACR-700
 // §2.3 header so Open is self-describing.
-func (s *Sealer) Seal(covenantID, column string, plaintext []byte) ([]byte, error) {
-	if covenantID == "" || column == "" {
+func (s *Sealer) Seal(rowID, column string, plaintext []byte) ([]byte, error) {
+	if rowID == "" || column == "" {
 		return nil, errors.New(aadMinParamsErr)
 	}
 	key, version, err := s.provider.Current()
@@ -92,7 +99,7 @@ func (s *Sealer) Seal(covenantID, column string, plaintext []byte) ([]byte, erro
 		return nil, fmt.Errorf("acp crypto: generate nonce: %w", err)
 	}
 
-	aad := buildAAD(covenantID, column)
+	aad := buildAAD(rowID, column)
 
 	// Allocate the final blob up front: header + plaintext + tag.
 	out := make([]byte, HeaderSize, HeaderSize+len(plaintext)+aead.Overhead())
@@ -103,15 +110,15 @@ func (s *Sealer) Seal(covenantID, column string, plaintext []byte) ([]byte, erro
 }
 
 // Open authenticates and decrypts a blob produced by Seal. The caller must
-// pass the same (covenantID, column) that was used at seal time; any
+// pass the same (rowID, column) that was used at seal time; any
 // mismatch surfaces as an AEAD authentication failure.
 //
 // The blob's header determines which key_version the provider looks up. A
 // version the provider cannot resolve is reported via keys.ErrKeyVersionUnavailable
 // (propagated unchanged), so callers can distinguish "bad ciphertext" from
 // "archived key gone".
-func (s *Sealer) Open(covenantID, column string, blob []byte) ([]byte, error) {
-	if covenantID == "" || column == "" {
+func (s *Sealer) Open(rowID, column string, blob []byte) ([]byte, error) {
+	if rowID == "" || column == "" {
 		return nil, errors.New(aadMinParamsErr)
 	}
 	version, keyVersion, nonce, payload, err := parseHeader(blob)
@@ -133,7 +140,7 @@ func (s *Sealer) Open(covenantID, column string, blob []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	aad := buildAAD(covenantID, column)
+	aad := buildAAD(rowID, column)
 
 	plaintext, err := aead.Open(nil, nonce, payload, aad)
 	if err != nil {
@@ -142,12 +149,12 @@ func (s *Sealer) Open(covenantID, column string, blob []byte) ([]byte, error) {
 	return plaintext, nil
 }
 
-// buildAAD packs (covenantID, column) into the §2.3 binding string.
-func buildAAD(covenantID, column string) []byte {
-	total := len(aadPrefix) + len(covenantID) + len(aadSeparator) + len(column)
+// buildAAD packs (rowID, column) into the §2.3 binding string.
+func buildAAD(rowID, column string) []byte {
+	total := len(aadPrefix) + len(rowID) + len(aadSeparator) + len(column)
 	out := make([]byte, 0, total)
 	out = append(out, aadPrefix...)
-	out = append(out, covenantID...)
+	out = append(out, rowID...)
 	out = append(out, aadSeparator...)
 	out = append(out, column...)
 	return out

@@ -3,12 +3,14 @@ package covenant
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
 
+	"github.com/inkmesh/acp-server/internal/crypto"
 	"github.com/inkmesh/acp-server/internal/id"
 	"github.com/inkmesh/acp-server/internal/tokens"
 )
@@ -68,9 +70,59 @@ type Member struct {
 	JoinedAt   time.Time `json:"joined_at"`
 }
 
-type Service struct{ db *sql.DB }
+type Service struct {
+	db     *sql.DB
+	sealer *crypto.Sealer // optional; when set, platform_id writes populate platform_id_enc
+}
 
 func New(db *sql.DB) *Service { return &Service{db: db} }
+
+// SetSealer wires an ACR-700 Sealer into the service so that subsequent
+// platform_id writes populate the platform_id_enc column. Callers that leave
+// the sealer unset still get platform_id_hash (stdlib SHA-256) but platform_id_enc
+// remains NULL. Tests that exercise pre-4.5 behavior can omit this call.
+func (s *Service) SetSealer(sealer *crypto.Sealer) { s.sealer = sealer }
+
+// sqlExec is satisfied by both *sql.DB and *sql.Tx so upsertPlatformIdentity
+// can be called from either context.
+type sqlExec interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+// hashPlatformID is the indexable lookup key for a platform_id (ACR-700 §4):
+// 64-char lowercase hex SHA-256 of the plaintext. Deterministic; not a
+// confidentiality surface.
+func hashPlatformID(plaintext string) string {
+	sum := sha256.Sum256([]byte(plaintext))
+	return hex.EncodeToString(sum[:])
+}
+
+// upsertPlatformIdentity writes one platform_identities row with the ACR-700
+// hash + enc columns populated. When sealer is nil, platform_id_enc is left
+// NULL; plaintext platform_id is still written so the existing covenant_members
+// FK continues to resolve until 4.5.7 gates the column drop.
+//
+// INSERT OR IGNORE keeps the call idempotent: on PK conflict the row already
+// exists and (by the time 4.5.4 rolls out) already has hash + enc filled by a
+// prior write or by Backfill.
+func upsertPlatformIdentity(exec sqlExec, sealer *crypto.Sealer, plaintext, nowRFC3339Nano string) error {
+	hash := hashPlatformID(plaintext)
+	var enc []byte
+	if sealer != nil {
+		blob, err := sealer.Seal(hash, "platform_id", []byte(plaintext))
+		if err != nil {
+			return fmt.Errorf("seal platform_id: %w", err)
+		}
+		enc = blob
+	}
+	_, err := exec.Exec(`
+		INSERT OR IGNORE INTO platform_identities
+			(platform_id, created_at, platform_id_hash, platform_id_enc)
+		VALUES (?, ?, ?, ?)`,
+		plaintext, nowRFC3339Nano, hash, enc,
+	)
+	return err
+}
 
 // Create builds a new Covenant in DRAFT state and registers the owner as a member.
 func (s *Service) Create(title, spaceType, ownerPlatformID string) (*Covenant, *Member, error) {
@@ -97,12 +149,7 @@ func (s *Service) Create(title, spaceType, ownerPlatformID string) (*Covenant, *
 		return nil, nil, fmt.Errorf("create covenant: %w", err)
 	}
 
-	_, err = tx.Exec(`
-		INSERT OR IGNORE INTO platform_identities (platform_id, created_at)
-		VALUES (?, ?)`,
-		ownerPlatformID, now.Format(time.RFC3339Nano),
-	)
-	if err != nil {
+	if err := upsertPlatformIdentity(tx, s.sealer, ownerPlatformID, now.Format(time.RFC3339Nano)); err != nil {
 		return nil, nil, err
 	}
 
@@ -231,9 +278,7 @@ func (s *Service) Join(covenantID, platformID, tierID string) (*Member, error) {
 		}
 	}
 
-	_, err = s.db.Exec(`INSERT OR IGNORE INTO platform_identities (platform_id, created_at) VALUES (?, ?)`,
-		platformID, time.Now().UTC().Format(time.RFC3339Nano))
-	if err != nil {
+	if err := upsertPlatformIdentity(s.db, s.sealer, platformID, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return nil, err
 	}
 
