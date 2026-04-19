@@ -74,6 +74,11 @@ func NewSealer(provider keys.KeyProvider) *Sealer {
 	return &Sealer{provider: provider}
 }
 
+// Provider returns the underlying KeyProvider. Exposed so out-of-package
+// callers (e.g. the reencrypt tool) can query key_version state without
+// holding a second reference to the provider.
+func (s *Sealer) Provider() keys.KeyProvider { return s.provider }
+
 // Seal encrypts plaintext under the provider's current key, binding the result
 // to (rowID, column) via the AAD. The returned blob carries the ACR-700
 // §2.3 header so Open is self-describing.

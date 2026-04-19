@@ -181,6 +181,50 @@ func TestSealRejectsEmptyAADInputs(t *testing.T) {
 	}
 }
 
+// T4: a blob sealed under key_version=N must still decrypt after the keyring
+// rotates to N+1, because At(N) returns the archived key. This pins the
+// invariant that underpins the reencrypt command's safety window.
+func TestOpenCrossVersionAfterRotate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "master.key")
+	p, err := keys.NewLocalKeyfileProvider(path)
+	if err != nil {
+		t.Fatalf("provider: %v", err)
+	}
+	s := NewSealer(p)
+
+	plaintext := []byte("cross-version payload")
+	blob, err := s.Seal("row-v1", "platform_id", plaintext)
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	// Pin the key_version actually written into the header — guard against
+	// silent drift if FirstVersion changes.
+	if v := uint32(blob[1])<<16 | uint32(blob[2])<<8 | uint32(blob[3]); v != keys.FirstVersion {
+		t.Fatalf("header key_version = %d, want %d", v, keys.FirstVersion)
+	}
+
+	if _, _, err := p.Rotate(); err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+
+	got, err := s.Open("row-v1", "platform_id", blob)
+	if err != nil {
+		t.Fatalf("open after rotate: %v", err)
+	}
+	if !bytes.Equal(got, plaintext) {
+		t.Error("cross-version Open returned different bytes")
+	}
+
+	// And new writes land under v2.
+	nextBlob, err := s.Seal("row-v2", "platform_id", []byte("post-rotate"))
+	if err != nil {
+		t.Fatalf("seal post-rotate: %v", err)
+	}
+	if v := uint32(nextBlob[1])<<16 | uint32(nextBlob[2])<<8 | uint32(nextBlob[3]); v != keys.FirstVersion+1 {
+		t.Errorf("post-rotate header key_version = %d, want %d", v, keys.FirstVersion+1)
+	}
+}
+
 func TestHeaderRoundTrip(t *testing.T) {
 	for _, v := range []uint32{1, 2, 255, 256, 0xFFFFFE, MaxKeyVersion} {
 		nonce := bytes.Repeat([]byte{byte(v)}, NonceSize)
