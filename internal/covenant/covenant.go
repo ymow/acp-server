@@ -61,8 +61,12 @@ type Covenant struct {
 }
 
 type Member struct {
-	CovenantID string    `json:"covenant_id"`
-	PlatformID string    `json:"platform_id"`
+	CovenantID string `json:"covenant_id"`
+	// PlatformID is the plaintext identifier. Per ACR-700 §4, API responses
+	// MUST NOT return it — covenant-scoped agent_id is the external handle.
+	// The field stays on the struct for internal join/lookup paths but is
+	// never serialized to clients.
+	PlatformID string    `json:"-"`
 	AgentID    string    `json:"agent_id"`
 	TierID     string    `json:"tier_id"`
 	IsOwner    bool      `json:"is_owner"`
@@ -89,10 +93,11 @@ type sqlExec interface {
 	Exec(query string, args ...any) (sql.Result, error)
 }
 
-// hashPlatformID is the indexable lookup key for a platform_id (ACR-700 §4):
+// HashPlatformID is the indexable lookup key for a platform_id (ACR-700 §4):
 // 64-char lowercase hex SHA-256 of the plaintext. Deterministic; not a
-// confidentiality surface.
-func hashPlatformID(plaintext string) string {
+// confidentiality surface. Exported so API handlers can render a
+// 12-char prefix in place of plaintext (ACR-700 §4 list_members output).
+func HashPlatformID(plaintext string) string {
 	sum := sha256.Sum256([]byte(plaintext))
 	return hex.EncodeToString(sum[:])
 }
@@ -106,7 +111,7 @@ func hashPlatformID(plaintext string) string {
 // exists and (by the time 4.5.4 rolls out) already has hash + enc filled by a
 // prior write or by Backfill.
 func upsertPlatformIdentity(exec sqlExec, sealer *crypto.Sealer, plaintext, nowRFC3339Nano string) error {
-	hash := hashPlatformID(plaintext)
+	hash := HashPlatformID(plaintext)
 	var enc []byte
 	if sealer != nil {
 		blob, err := sealer.Seal(hash, "platform_id", []byte(plaintext))
