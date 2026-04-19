@@ -171,13 +171,13 @@ func TestOpenUnknownKeyVersion(t *testing.T) {
 func TestSealRejectsEmptyAADInputs(t *testing.T) {
 	s := newTestSealer(t)
 	if _, err := s.Seal("", "col", []byte("x")); err == nil {
-		t.Error("expected error on empty covenant_id")
+		t.Error("expected error on empty row_id")
 	}
 	if _, err := s.Seal("row", "", []byte("x")); err == nil {
 		t.Error("expected error on empty column")
 	}
 	if _, err := s.Open("", "col", make([]byte, HeaderSize+AuthTagSize)); err == nil {
-		t.Error("expected error on empty covenant_id (open)")
+		t.Error("expected error on empty row_id (open)")
 	}
 }
 
