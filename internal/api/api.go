@@ -19,6 +19,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/inkmesh/acp-server/internal/audit"
 	"github.com/inkmesh/acp-server/internal/budget"
@@ -702,7 +703,43 @@ func (s *Server) handleListMembers(w http.ResponseWriter, r *http.Request) {
 	if members == nil {
 		members = []memberRow{}
 	}
-	jsonOK(w, map[string]any{"members": members})
+
+	// ACR-50 §7: owners need the pending access queue alongside current
+	// members to run the approve/reject flow without a second request.
+	// Same 12-char hash-prefix redaction rule — plaintext platform_id never
+	// leaves the DB.
+	type pendingRow struct {
+		RequestID            string `json:"request_id"`
+		PlatformIDHashPrefix string `json:"platform_id_hash_prefix"`
+		TierID               string `json:"tier_id"`
+		PaymentRef           string `json:"payment_ref,omitempty"`
+		SelfDeclaration      string `json:"self_declaration,omitempty"`
+		CreatedAt            string `json:"created_at"`
+	}
+	pendingReqs, err := s.covSvc.ListPendingAccessRequests(covenantID)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	pending := make([]pendingRow, 0, len(pendingReqs))
+	for _, r := range pendingReqs {
+		row := pendingRow{
+			RequestID:       r.RequestID,
+			TierID:          r.TierID,
+			PaymentRef:      r.PaymentRef,
+			SelfDeclaration: r.SelfDeclaration,
+			CreatedAt:       r.CreatedAt.Format(time.RFC3339Nano),
+		}
+		if len(r.PlatformIDHash) >= 12 {
+			row.PlatformIDHashPrefix = r.PlatformIDHash[:12]
+		}
+		pending = append(pending, row)
+	}
+
+	jsonOK(w, map[string]any{
+		"members":                 members,
+		"pending_access_requests": pending,
+	})
 }
 
 // handleGetConcentrationStatus returns the full ACR-20 Part 4 Layer 5 report

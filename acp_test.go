@@ -1894,6 +1894,105 @@ func extractConcentrationAgents(t *testing.T, receipt *execution.Receipt, label 
 	return agents
 }
 
+// TestListMembersSurfacesPendingAccessRequests exercises Phase 4.6 (B) end-to-end:
+// an ACR-50 apply produces a pending request row that must appear alongside
+// existing members in the owner's list_members response, so the review queue
+// is one roundtrip. After approval, the pending list empties and the member
+// count grows by one. Plaintext platform_id never leaves the server — only
+// the 12-char hash prefix does.
+func TestListMembersSurfacesPendingAccessRequests(t *testing.T) {
+	dbPath := t.TempDir() + "/list_members_pending.db"
+	conn, err := db.Open(dbPath)
+	must(t, err, "open db")
+	defer conn.Close()
+
+	covSvc := covenant.New(conn)
+	srv := httptest.NewServer(api.New(conn))
+	defer srv.Close()
+
+	// Covenant in OPEN, one tier. Owner already exists as a member (by Create).
+	cov, _, err := covSvc.Create("List-Members Test", "code", "github:owner_lm")
+	must(t, err, "create covenant")
+	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil), "add tier")
+	_, err = covSvc.Transition(cov.CovenantID, "OPEN")
+	must(t, err, "→OPEN")
+
+	ownerHeaders := map[string]string{
+		"X-Covenant-ID":  cov.CovenantID,
+		"X-Owner-Token":  cov.OwnerToken,
+		"Content-Type":   "application/json",
+	}
+
+	// Applicant files an access request via HTTP (not direct service call), so
+	// we also verify the apply handler shape while we're here.
+	applyResp := postJSON(t, srv.URL+"/covenants/"+cov.CovenantID+"/apply", nil, map[string]any{
+		"platform_id":      "github:applicant_lm",
+		"tier_id":          "contributor",
+		"payment_ref":      "stripe:pi_test",
+		"self_declaration": "I will contribute.",
+	})
+	if applyResp.StatusCode != 200 {
+		t.Fatalf("apply: status=%d body=%s", applyResp.StatusCode, applyResp.Body)
+	}
+	requestID, _ := applyResp.JSON["request_id"].(string)
+	if requestID == "" {
+		t.Fatalf("apply response missing request_id: %s", applyResp.Body)
+	}
+	if _, hasPlain := applyResp.JSON["platform_id"]; hasPlain {
+		t.Errorf("apply response leaked plaintext platform_id: %s", applyResp.Body)
+	}
+
+	// list_members must surface the pending request alongside the (1) owner member.
+	listResp := postJSON(t, srv.URL+"/tools/list_members", ownerHeaders, map[string]any{
+		"params": map[string]any{"covenant_id": cov.CovenantID},
+	})
+	if listResp.StatusCode != 200 {
+		t.Fatalf("list_members: status=%d body=%s", listResp.StatusCode, listResp.Body)
+	}
+	members, _ := listResp.JSON["members"].([]any)
+	if len(members) != 1 {
+		t.Errorf("want 1 member (owner), got %d: %s", len(members), listResp.Body)
+	}
+	pending, _ := listResp.JSON["pending_access_requests"].([]any)
+	if len(pending) != 1 {
+		t.Fatalf("want 1 pending request, got %d: %s", len(pending), listResp.Body)
+	}
+	p := pending[0].(map[string]any)
+	if p["request_id"] != requestID {
+		t.Errorf("pending request_id mismatch: got %v want %s", p["request_id"], requestID)
+	}
+	if prefix, _ := p["platform_id_hash_prefix"].(string); len(prefix) != 12 {
+		t.Errorf("hash prefix length %d, want 12: %v", len(prefix), p)
+	}
+	if _, hasPlain := p["platform_id"]; hasPlain {
+		t.Errorf("pending entry leaked plaintext platform_id: %v", p)
+	}
+	if p["tier_id"] != "contributor" {
+		t.Errorf("tier_id = %v, want contributor", p["tier_id"])
+	}
+
+	// Approve via HTTP admin tool. After approval the pending list empties and
+	// member count goes to 2 (owner + new active member).
+	approveResp := postJSON(t, srv.URL+"/tools/approve_agent_access", ownerHeaders, map[string]any{
+		"params": map[string]any{"request_id": requestID},
+	})
+	if approveResp.StatusCode != 200 {
+		t.Fatalf("approve: status=%d body=%s", approveResp.StatusCode, approveResp.Body)
+	}
+
+	listResp2 := postJSON(t, srv.URL+"/tools/list_members", ownerHeaders, map[string]any{
+		"params": map[string]any{"covenant_id": cov.CovenantID},
+	})
+	members2, _ := listResp2.JSON["members"].([]any)
+	if len(members2) != 2 {
+		t.Errorf("post-approve want 2 members, got %d: %s", len(members2), listResp2.Body)
+	}
+	pending2, _ := listResp2.JSON["pending_access_requests"].([]any)
+	if len(pending2) != 0 {
+		t.Errorf("post-approve want 0 pending, got %d: %s", len(pending2), listResp2.Body)
+	}
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 func must(t *testing.T, err error, label string) {
