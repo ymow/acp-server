@@ -99,6 +99,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /covenants/{covenant_id}/tiers", s.handleAddTier)
 	s.mux.HandleFunc("POST /covenants/{covenant_id}/transition", s.handleTransition)
 	s.mux.HandleFunc("POST /covenants/{covenant_id}/join", s.handleJoin)
+	s.mux.HandleFunc("POST /covenants/{covenant_id}/apply", s.handleApplyToCovenant)
 	s.mux.HandleFunc("GET /covenants/{covenant_id}", s.handleGetCovenant)
 	s.mux.HandleFunc("GET /covenants/{covenant_id}/state", s.handleGetState)
 
@@ -261,6 +262,49 @@ func (s *Server) handleJoin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonOK(w, map[string]any{"member": member})
+}
+
+// handleApplyToCovenant is the ACR-50 §2.2 request_agent_access surface. It
+// differs from /join in three ways: (1) no covenant_members row is created —
+// the request sits in agent_access_requests until the owner runs approve or
+// reject; (2) the applicant's platform_id is sealed via the 4.5 Sealer and
+// never echoed back in the response; (3) payment_ref + self_declaration are
+// captured for the owner's review. Public endpoint: the applicant has no
+// session yet, and cannot have one until approval.
+func (s *Server) handleApplyToCovenant(w http.ResponseWriter, r *http.Request) {
+	covenantID := r.PathValue("covenant_id")
+	var req struct {
+		PlatformID      string `json:"platform_id"`
+		TierID          string `json:"tier_id"`
+		PaymentRef      string `json:"payment_ref"`
+		SelfDeclaration string `json:"self_declaration"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	ar, err := s.covSvc.CreateAccessRequest(
+		covenantID, req.PlatformID, req.TierID, req.PaymentRef, req.SelfDeclaration,
+	)
+	if err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	// ACR-50 §2.3 AgentAccessReceipt shape. platform_id is represented only by
+	// the 12-char hash prefix so the applicant can verify "the server heard me"
+	// without the server re-transmitting plaintext.
+	hashPrefix := ""
+	if len(ar.PlatformIDHash) >= 12 {
+		hashPrefix = ar.PlatformIDHash[:12]
+	}
+	jsonOK(w, map[string]any{
+		"request_id":              ar.RequestID,
+		"covenant_id":             ar.CovenantID,
+		"tier_id":                 ar.TierID,
+		"payment_ref":             ar.PaymentRef,
+		"status":                  ar.Status,
+		"platform_id_hash_prefix": hashPrefix,
+		"created_at":              ar.CreatedAt,
+	})
 }
 
 func (s *Server) handleGetCovenant(w http.ResponseWriter, r *http.Request) {
