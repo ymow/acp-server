@@ -2,6 +2,8 @@
 
 > **Git tracks what changed. ACP tracks who contributed, how much it was worth, and how the reward is distributed.**
 
+[![X (formerly Twitter) Thread](https://img.shields.io/badge/X-Thread-000000?style=flat&logo=x)](https://x.com/ACPSERVER/status/2045899600498942367)
+
 **Agent Covenant Protocol (ACP)** — an open protocol for multi-participant collaboration between humans and AI agents, with tamper-evident contribution tracking and proportional token settlement.
 
 This is NOT IBM's Agent Communication Protocol. ACP is a new protocol for a new problem:
