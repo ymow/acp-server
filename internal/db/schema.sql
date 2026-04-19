@@ -42,10 +42,14 @@ CREATE TABLE IF NOT EXISTS access_tiers (
 );
 
 CREATE TABLE IF NOT EXISTS platform_identities (
-    platform_id TEXT PRIMARY KEY,             -- pid_{uuid}
-    kyc_status  TEXT NOT NULL DEFAULT 'none',
-    created_at  TEXT NOT NULL
+    platform_id      TEXT PRIMARY KEY,             -- pid_{uuid}
+    kyc_status       TEXT NOT NULL DEFAULT 'none',
+    created_at       TEXT NOT NULL,
+    platform_id_hash TEXT NOT NULL DEFAULT '',     -- ACR-700 §4: SHA-256(plaintext) hex; indexable lookup key
+    platform_id_enc  BLOB                          -- ACR-700 §2.3 ciphertext blob; NULL until 4.5.4 writer cutover
 );
+CREATE INDEX IF NOT EXISTS idx_platform_identities_hash
+    ON platform_identities(platform_id_hash) WHERE platform_id_hash != '';
 
 CREATE TABLE IF NOT EXISTS covenant_members (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
