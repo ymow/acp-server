@@ -51,7 +51,7 @@ const (
 	MaxKeyVersion   = (1 << 24) - 1
 	aadPrefix       = "acp-server|"
 	aadSeparator    = "|"
-	aadMinParamsErr = "acp crypto: covenant_id and column are required for AAD"
+	aadMinParamsErr = "acp crypto: row_id and column are required for AAD"
 )
 
 // ErrFormat is returned when a ciphertext blob cannot be parsed: too short,
