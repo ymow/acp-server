@@ -49,7 +49,7 @@ func TestMVPAcceptanceCriteria(t *testing.T) {
 		}
 
 		// Add tier, then open
-		if err := covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil); err != nil {
+		if err := covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil, 0); err != nil {
 			t.Fatalf("add tier: %v", err)
 		}
 		cov, err = covSvc.Transition(cov.CovenantID, "OPEN")
@@ -67,7 +67,7 @@ func TestMVPAcceptanceCriteria(t *testing.T) {
 		// Setup
 		cov, ownerMem, err := covSvc.Create("Royalty Test", "book", "pid_owner_2")
 		must(t, err, "create")
-		must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil), "add tier")
+		must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil, 0), "add tier")
 		cov, err = covSvc.Transition(cov.CovenantID, "OPEN")
 		must(t, err, "→OPEN")
 
@@ -253,7 +253,7 @@ func TestBudgetExhaustion(t *testing.T) {
 
 	cov, ownerMem, err := covSvc.Create("Budget Exhaustion Test", "book", "pid_bex_owner")
 	must(t, err, "create")
-	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil), "add tier")
+	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil, 0), "add tier")
 	cov, err = covSvc.Transition(cov.CovenantID, "OPEN")
 	must(t, err, "→OPEN")
 	agent, err := covSvc.Join(cov.CovenantID, "pid_bex_agent", "contributor")
@@ -308,7 +308,7 @@ func TestCostAndNetDeltaAccounting(t *testing.T) {
 
 	cov, owner, err := covSvc.Create("NetDelta Test", "book", "pid_nd_owner")
 	must(t, err, "create")
-	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil), "add tier")
+	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil, 0), "add tier")
 	_, err = covSvc.Transition(cov.CovenantID, "OPEN")
 	must(t, err, "→OPEN")
 	agent, err := covSvc.Join(cov.CovenantID, "pid_nd_agent", "contributor")
@@ -539,7 +539,7 @@ func TestRejectDraftRefundsBudget(t *testing.T) {
 
 	cov, owner, err := covSvc.Create("Refund Test", "book", "pid_r_owner")
 	must(t, err, "create")
-	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil), "add tier")
+	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil, 0), "add tier")
 	_, err = covSvc.Transition(cov.CovenantID, "OPEN")
 	must(t, err, "→OPEN")
 	agent, err := covSvc.Join(cov.CovenantID, "pid_r_agent", "contributor")
@@ -604,7 +604,7 @@ func TestCostWeightApplied(t *testing.T) {
 	_, err = conn.Exec(`UPDATE covenants SET cost_weight=? WHERE covenant_id=?`, 3.0, cov.CovenantID)
 	must(t, err, "set cost_weight=3.0")
 
-	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil), "add tier")
+	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil, 0), "add tier")
 	_, err = covSvc.Transition(cov.CovenantID, "OPEN")
 	must(t, err, "→OPEN")
 	agent, err := covSvc.Join(cov.CovenantID, "pid_w_agent", "contributor")
@@ -655,7 +655,7 @@ func TestRebuildFromAuditLog(t *testing.T) {
 
 	cov, owner, err := covSvc.Create("Rebuild Test", "book", "pid_rb_owner")
 	must(t, err, "create")
-	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil), "add tier")
+	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil, 0), "add tier")
 	_, err = covSvc.Transition(cov.CovenantID, "OPEN")
 	must(t, err, "→OPEN")
 	agent, err := covSvc.Join(cov.CovenantID, "pid_rb_agent", "contributor")
@@ -778,7 +778,7 @@ func TestCrossCurrencyChargeRejected(t *testing.T) {
 
 	cov, owner, err := covSvc.Create("Currency Mismatch", "book", "pid_cm_owner")
 	must(t, err, "create")
-	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil), "add tier")
+	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil, 0), "add tier")
 	_, err = covSvc.Transition(cov.CovenantID, "OPEN")
 	must(t, err, "→OPEN")
 	agent, err := covSvc.Join(cov.CovenantID, "pid_cm_agent", "contributor")
@@ -858,7 +858,7 @@ func TestTokenSnapshotHashOnLock(t *testing.T) {
 
 	cov, owner, err := covSvc.Create("Snapshot Test", "book", "pid_snap_owner")
 	must(t, err, "create")
-	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil), "tier")
+	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil, 0), "tier")
 	_, err = covSvc.Transition(cov.CovenantID, "OPEN")
 	must(t, err, "→OPEN")
 	ag, err := covSvc.Join(cov.CovenantID, "pid_snap_agent", "contributor")
@@ -928,7 +928,7 @@ func TestLeaveCovenantBlocksFurtherActions(t *testing.T) {
 
 	cov, owner, err := covSvc.Create("Leave Test", "book", "pid_leave_owner")
 	must(t, err, "create")
-	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil), "tier")
+	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil, 0), "tier")
 	_, err = covSvc.Transition(cov.CovenantID, "OPEN")
 	must(t, err, "→OPEN")
 	ag, err := covSvc.Join(cov.CovenantID, "pid_leaver", "contributor")
@@ -1005,7 +1005,7 @@ func TestTokenRuleDrivesApproveDraft(t *testing.T) {
 		})
 	must(t, err, "configure rules")
 
-	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 2.0, nil), "tier")
+	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 2.0, nil, 0), "tier")
 	_, err = covSvc.Transition(cov.CovenantID, "OPEN")
 	must(t, err, "→OPEN")
 	ag, err := covSvc.Join(cov.CovenantID, "pid_rule_agent", "contributor")
@@ -1043,7 +1043,7 @@ func TestGitTwinMergeFlow(t *testing.T) {
 	// Covenant lifecycle: create → add tier → open → join author → approve → ACTIVE
 	cov, owner, err := covSvc.Create("Git Twin Covenant", "code", "github:owner")
 	must(t, err, "create")
-	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil), "add tier")
+	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil, 0), "add tier")
 	_, err = covSvc.Transition(cov.CovenantID, "OPEN")
 	must(t, err, "→OPEN")
 	author, err := covSvc.Join(cov.CovenantID, "github:alice", "contributor")
@@ -1148,7 +1148,7 @@ func TestGitTwinAnchorLifecycle(t *testing.T) {
 	cov, owner, err := covSvc.Create("Anchor Covenant", "code", "github:owner")
 	must(t, err, "create")
 	must(t, covSvc.SetGitTwin(cov.CovenantID, repoURL, "github", ""), "bind twin")
-	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil), "tier")
+	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil, 0), "tier")
 	_, err = covSvc.Transition(cov.CovenantID, "OPEN")
 	must(t, err, "→OPEN")
 	author, err := covSvc.Join(cov.CovenantID, "github:alice", "contributor")
@@ -1305,7 +1305,7 @@ func TestGitTwinAuditEvent(t *testing.T) {
 	cov, owner, err := covSvc.Create("Audit Event Covenant", "code", "github:owner")
 	must(t, err, "create")
 	must(t, covSvc.SetGitTwin(cov.CovenantID, "https://github.com/audit/demo", "github", ""), "bind twin")
-	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil), "tier")
+	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil, 0), "tier")
 	_, err = covSvc.Transition(cov.CovenantID, "OPEN")
 	must(t, err, "→OPEN")
 	alice, err := covSvc.Join(cov.CovenantID, "github:alice", "contributor")
@@ -1443,7 +1443,7 @@ func TestGitTwinAnchorSigned(t *testing.T) {
 	cov, owner, err := covSvc.Create("Signed Anchor Covenant", "code", "github:owner")
 	must(t, err, "create")
 	must(t, covSvc.SetGitTwin(cov.CovenantID, repoURL, "github", ""), "bind twin")
-	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil), "tier")
+	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil, 0), "tier")
 	_, err = covSvc.Transition(cov.CovenantID, "OPEN")
 	must(t, err, "→OPEN")
 	author, err := covSvc.Join(cov.CovenantID, "github:alice", "contributor")
@@ -1582,7 +1582,7 @@ func TestGitTwinSetGitTwinDraftOnly(t *testing.T) {
 		t.Fatal("invalid provider must error")
 	}
 	// Move past DRAFT
-	must(t, covSvc.AddTier(cov.CovenantID, "t", "T", 1.0, nil), "tier")
+	must(t, covSvc.AddTier(cov.CovenantID, "t", "T", 1.0, nil, 0), "tier")
 	_, err = covSvc.Transition(cov.CovenantID, "OPEN")
 	must(t, err, "→OPEN")
 	// Post-DRAFT set → must error
@@ -1673,7 +1673,7 @@ func TestRateLimitPerHour(t *testing.T) {
 
 	cov, ownerMem, err := covSvc.Create("Rate-limit test", "book", "pid_rl_owner")
 	must(t, err, "create covenant")
-	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil), "add tier")
+	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil, 0), "add tier")
 	_, err = covSvc.Transition(cov.CovenantID, "OPEN")
 	must(t, err, "→OPEN")
 
@@ -1766,7 +1766,7 @@ func TestConcentrationWarning(t *testing.T) {
 
 	cov, ownerMem, err := covSvc.Create("Concentration test", "book", "pid_cw_owner")
 	must(t, err, "create covenant")
-	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil), "add tier")
+	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil, 0), "add tier")
 	_, err = covSvc.Transition(cov.CovenantID, "OPEN")
 	must(t, err, "→OPEN")
 
@@ -1913,7 +1913,7 @@ func TestListMembersSurfacesPendingAccessRequests(t *testing.T) {
 	// Covenant in OPEN, one tier. Owner already exists as a member (by Create).
 	cov, _, err := covSvc.Create("List-Members Test", "code", "github:owner_lm")
 	must(t, err, "create covenant")
-	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil), "add tier")
+	must(t, covSvc.AddTier(cov.CovenantID, "contributor", "Contributor", 1.0, nil, 0), "add tier")
 	_, err = covSvc.Transition(cov.CovenantID, "OPEN")
 	must(t, err, "→OPEN")
 
@@ -2009,13 +2009,13 @@ func TestGetAgentAccessStatus(t *testing.T) {
 
 	covA, _, err := covSvc.Create("A", "code", "github:ownerA")
 	must(t, err, "create A")
-	must(t, covSvc.AddTier(covA.CovenantID, "contributor", "C", 1.0, nil), "tier A")
+	must(t, covSvc.AddTier(covA.CovenantID, "contributor", "C", 1.0, nil, 0), "tier A")
 	_, err = covSvc.Transition(covA.CovenantID, "OPEN")
 	must(t, err, "→OPEN A")
 
 	covB, _, err := covSvc.Create("B", "code", "github:ownerB")
 	must(t, err, "create B")
-	must(t, covSvc.AddTier(covB.CovenantID, "contributor", "C", 1.0, nil), "tier B")
+	must(t, covSvc.AddTier(covB.CovenantID, "contributor", "C", 1.0, nil, 0), "tier B")
 	_, err = covSvc.Transition(covB.CovenantID, "OPEN")
 	must(t, err, "→OPEN B")
 

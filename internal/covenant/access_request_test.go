@@ -18,7 +18,7 @@ func accessTestSvc(t *testing.T, withSealer bool) (*Service, string) {
 	if err != nil {
 		t.Fatalf("create covenant: %v", err)
 	}
-	if err := svc.AddTier(cov.CovenantID, "tier_a", "Tier A", 1.0, nil); err != nil {
+	if err := svc.AddTier(cov.CovenantID, "tier_a", "Tier A", 1.0, nil, 0); err != nil {
 		t.Fatalf("add tier: %v", err)
 	}
 	if _, err := svc.Transition(cov.CovenantID, "OPEN"); err != nil {
@@ -104,11 +104,11 @@ func TestGetAccessRequestScopedToCovenant(t *testing.T) {
 	svc.SetSealer(newTestSealer(t))
 
 	covA, _, _ := svc.Create("A", "code", "github:ownerA")
-	svc.AddTier(covA.CovenantID, "tier_a", "A", 1.0, nil)
+	svc.AddTier(covA.CovenantID, "tier_a", "A", 1.0, nil, 0)
 	svc.Transition(covA.CovenantID, "OPEN")
 
 	covB, _, _ := svc.Create("B", "code", "github:ownerB")
-	svc.AddTier(covB.CovenantID, "tier_a", "A", 1.0, nil)
+	svc.AddTier(covB.CovenantID, "tier_a", "A", 1.0, nil, 0)
 	svc.Transition(covB.CovenantID, "OPEN")
 
 	arA, err := svc.CreateAccessRequest(covA.CovenantID, "github:applicant", "tier_a", "", "")
@@ -239,7 +239,7 @@ func TestApproveAccessRequestCrossCovenantScoped(t *testing.T) {
 	// the request_id is known. Same protection as GetAccessRequest.
 	svc, covA := accessTestSvc(t, true)
 	covB, _, _ := svc.Create("B", "code", "github:ownerB")
-	svc.AddTier(covB.CovenantID, "tier_a", "A", 1.0, nil)
+	svc.AddTier(covB.CovenantID, "tier_a", "A", 1.0, nil, 0)
 	svc.Transition(covB.CovenantID, "OPEN")
 
 	ar, _ := svc.CreateAccessRequest(covA, "github:applicant", "tier_a", "", "")
@@ -269,5 +269,122 @@ func TestListPendingAccessRequests(t *testing.T) {
 		if p.Status != "pending" {
 			t.Errorf("unexpected status %q in pending list", p.Status)
 		}
+	}
+}
+
+// feeTestSvc mirrors accessTestSvc but takes an explicit entry_fee so the
+// ACR-50 §7 ledger-integration tests can pin the fee value.
+func feeTestSvc(t *testing.T, entryFee int64) (*Service, string) {
+	t.Helper()
+	db := newTestDB(t)
+	svc := New(db)
+	svc.SetSealer(newTestSealer(t))
+	cov, _, err := svc.Create("Fee", "code", "github:owner")
+	if err != nil {
+		t.Fatalf("create covenant: %v", err)
+	}
+	if err := svc.AddTier(cov.CovenantID, "tier_fee", "Fee Tier", 1.0, nil, entryFee); err != nil {
+		t.Fatalf("add tier: %v", err)
+	}
+	if _, err := svc.Transition(cov.CovenantID, "OPEN"); err != nil {
+		t.Fatalf("transition OPEN: %v", err)
+	}
+	return svc, cov.CovenantID
+}
+
+func TestApproveBooksEntryFeeLedgerRow(t *testing.T) {
+	svc, covID := feeTestSvc(t, 500)
+	ar, err := svc.CreateAccessRequest(covID, "github:applicant", "tier_fee", "", "")
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	mem, err := svc.ApproveAccessRequest(covID, ar.RequestID, "log_approve_fee")
+	if err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+
+	var delta, balanceAfter int64
+	var sourceType, sourceRef, logID, status string
+	err = svc.db.QueryRow(`
+		SELECT delta, balance_after, source_type, source_ref, log_id, status
+		FROM token_ledger
+		WHERE covenant_id=? AND agent_id=? AND source_type='entry_fee'`,
+		covID, mem.AgentID,
+	).Scan(&delta, &balanceAfter, &sourceType, &sourceRef, &logID, &status)
+	if err != nil {
+		t.Fatalf("ledger row not found: %v", err)
+	}
+	if delta != -500 {
+		t.Errorf("delta = %d, want -500", delta)
+	}
+	if balanceAfter != -500 {
+		t.Errorf("balance_after = %d, want -500 (debt model)", balanceAfter)
+	}
+	if sourceRef != ar.RequestID {
+		t.Errorf("source_ref = %q, want request_id %q", sourceRef, ar.RequestID)
+	}
+	if logID != "log_approve_fee" {
+		t.Errorf("log_id = %q, want approve_log_id", logID)
+	}
+	if status != "confirmed" {
+		t.Errorf("status = %q, want confirmed", status)
+	}
+}
+
+func TestApproveZeroFeeSkipsLedger(t *testing.T) {
+	// The legacy path — tiers without a fee must not produce a ledger row.
+	// Otherwise pre-4.6.C covenants would gain spurious 0-delta rows on every
+	// approve, polluting settlement math.
+	svc, covID := feeTestSvc(t, 0)
+	ar, _ := svc.CreateAccessRequest(covID, "github:applicant", "tier_fee", "", "")
+	mem, err := svc.ApproveAccessRequest(covID, ar.RequestID, "log_approve_nofee")
+	if err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	var n int
+	if err := svc.db.QueryRow(
+		`SELECT COUNT(*) FROM token_ledger WHERE covenant_id=? AND agent_id=?`,
+		covID, mem.AgentID,
+	).Scan(&n); err != nil {
+		t.Fatalf("count ledger: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("zero-fee approve created %d ledger rows, want 0", n)
+	}
+}
+
+func TestApproveEntryFeeTransactional(t *testing.T) {
+	// If the ledger insert fails the whole approve must roll back — otherwise
+	// a member could end up active without the fee on record, or vice versa.
+	// Forcing a duplicate log_id is the cheapest way to trigger an insert
+	// error inside the tx.
+	svc, covID := feeTestSvc(t, 100)
+	ar1, _ := svc.CreateAccessRequest(covID, "github:a", "tier_fee", "", "")
+	if _, err := svc.ApproveAccessRequest(covID, ar1.RequestID, "log_dup"); err != nil {
+		t.Fatalf("first approve: %v", err)
+	}
+
+	ar2, _ := svc.CreateAccessRequest(covID, "github:b", "tier_fee", "", "")
+	if _, err := svc.ApproveAccessRequest(covID, ar2.RequestID, "log_dup"); err == nil {
+		t.Fatal("expected approve to fail on duplicate log_id")
+	}
+
+	// Second applicant must not have a covenant_members row: the tx rolled back.
+	var memCount int
+	svc.db.QueryRow(
+		`SELECT COUNT(*) FROM covenant_members WHERE covenant_id=? AND platform_id=?`,
+		covID, "github:b",
+	).Scan(&memCount)
+	if memCount != 0 {
+		t.Errorf("rollback broken: failed approve left %d member rows", memCount)
+	}
+
+	// Access request must still be 'pending' (update was inside the same tx).
+	req, err := svc.GetAccessRequest(covID, ar2.RequestID)
+	if err != nil {
+		t.Fatalf("reload request: %v", err)
+	}
+	if req.Status != "pending" {
+		t.Errorf("status = %q after rollback, want pending", req.Status)
 	}
 }

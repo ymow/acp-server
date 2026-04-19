@@ -199,16 +199,20 @@ func (s *Service) Create(title, spaceType, ownerPlatformID string) (*Covenant, *
 	return cov, mem, nil
 }
 
-// AddTier registers an AccessTier for an OPEN covenant.
-func (s *Service) AddTier(covenantID, tierID, displayName string, tokenMultiplier float64, maxSlots *int) error {
+// AddTier registers an AccessTier for an OPEN covenant. entryFeeTokens is the
+// ACR-50 §7 on-approve debit booked in token_ledger (0 = no debit).
+func (s *Service) AddTier(covenantID, tierID, displayName string, tokenMultiplier float64, maxSlots *int, entryFeeTokens int64) error {
 	var maxSlotsVal interface{}
 	if maxSlots != nil {
 		maxSlotsVal = *maxSlots
 	}
+	if entryFeeTokens < 0 {
+		return fmt.Errorf("entry_fee_tokens must be >= 0 (got %d)", entryFeeTokens)
+	}
 	_, err := s.db.Exec(`
-		INSERT INTO access_tiers (tier_id, covenant_id, display_name, token_multiplier, max_slots)
-		VALUES (?, ?, ?, ?, ?)`,
-		tierID, covenantID, displayName, tokenMultiplier, maxSlotsVal,
+		INSERT INTO access_tiers (tier_id, covenant_id, display_name, token_multiplier, max_slots, entry_fee_tokens)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		tierID, covenantID, displayName, tokenMultiplier, maxSlotsVal, entryFeeTokens,
 	)
 	return err
 }

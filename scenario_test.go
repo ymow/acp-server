@@ -59,8 +59,8 @@ func TestE2EScenario(t *testing.T) {
 	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 	// 步驟 2：Owner 設定存取層級（業務語義：定義作者分潤比例）
 	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-	mustOK(t, covSvc.AddTier(cov.CovenantID, "author", "作者", 1.0, nil), "新增作者層級")
-	mustOK(t, covSvc.AddTier(cov.CovenantID, "senior", "資深作者", 1.5, intPtr(3)), "新增資深作者層級（限3名）")
+	mustOK(t, covSvc.AddTier(cov.CovenantID, "author", "作者", 1.0, nil, 0), "新增作者層級")
+	mustOK(t, covSvc.AddTier(cov.CovenantID, "senior", "資深作者", 1.5, intPtr(3), 0), "新增資深作者層級（限3名）")
 	t.Log("【層級設定】 author (1.0x), senior (1.5x, max 3)")
 
 	// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -170,7 +170,7 @@ func TestE2EScenario(t *testing.T) {
 		// 建立獨立測試用 Covenant（在 OPEN 狀態下測試重複 platform_id）
 		dupCov, _, err := covSvc.Create("重複加入測試", "book", "pid_dup_owner")
 		mustOK(t, err, "建立測試 Covenant")
-		mustOK(t, covSvc.AddTier(dupCov.CovenantID, "tier1", "T1", 1.0, nil), "新增層級")
+		mustOK(t, covSvc.AddTier(dupCov.CovenantID, "tier1", "T1", 1.0, nil, 0), "新增層級")
 		dupCov, _ = covSvc.Transition(dupCov.CovenantID, "OPEN")
 
 		// 第一次加入應成功
@@ -193,7 +193,7 @@ func TestE2EScenario(t *testing.T) {
 		// 建立獨立測試用 Covenant，預算設為 25（propose_passage 每次消耗 10）
 		budgetCov, budgetOwner, err := covSvc.Create("預算測試專案", "book", "pid_budget_owner")
 		mustOK(t, err, "建立預算測試 Covenant")
-		mustOK(t, covSvc.AddTier(budgetCov.CovenantID, "tier1", "T1", 1.0, nil), "新增層級")
+		mustOK(t, covSvc.AddTier(budgetCov.CovenantID, "tier1", "T1", 1.0, nil, 0), "新增層級")
 		budgetCov, _ = covSvc.Transition(budgetCov.CovenantID, "OPEN")
 		agent, _ := covSvc.Join(budgetCov.CovenantID, "pid_budget_agent", "tier1")
 		budgetCov, _ = covSvc.Transition(budgetCov.CovenantID, "ACTIVE")

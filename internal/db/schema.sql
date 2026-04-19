@@ -32,12 +32,13 @@ CREATE TABLE IF NOT EXISTS covenants (
 );
 
 CREATE TABLE IF NOT EXISTS access_tiers (
-    tier_id          TEXT NOT NULL,
-    covenant_id      TEXT NOT NULL REFERENCES covenants(covenant_id),
-    display_name     TEXT NOT NULL,
-    price_usd        REAL NOT NULL DEFAULT 0,
-    token_multiplier REAL NOT NULL DEFAULT 1.0,
-    max_slots        INTEGER,                  -- NULL = unlimited
+    tier_id           TEXT NOT NULL,
+    covenant_id       TEXT NOT NULL REFERENCES covenants(covenant_id),
+    display_name      TEXT NOT NULL,
+    price_usd         REAL NOT NULL DEFAULT 0,       -- ACR-50 fiat price (off-chain receipt)
+    token_multiplier  REAL NOT NULL DEFAULT 1.0,
+    max_slots         INTEGER,                       -- NULL = unlimited
+    entry_fee_tokens  INTEGER NOT NULL DEFAULT 0,    -- ACR-50 §7: on-approve debit in token_ledger (0 = no debit)
     PRIMARY KEY (covenant_id, tier_id)
 );
 

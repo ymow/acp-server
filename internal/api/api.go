@@ -214,6 +214,7 @@ func (s *Server) handleAddTier(w http.ResponseWriter, r *http.Request) {
 		DisplayName     string  `json:"display_name"`
 		TokenMultiplier float64 `json:"token_multiplier"`
 		MaxSlots        *int    `json:"max_slots"`
+		EntryFeeTokens  int64   `json:"entry_fee_tokens"` // ACR-50 §7: on-approve debit; 0 = no debit
 	}
 	if !decode(w, r, &req) {
 		return
@@ -225,7 +226,7 @@ func (s *Server) handleAddTier(w http.ResponseWriter, r *http.Request) {
 	if req.TokenMultiplier == 0 {
 		req.TokenMultiplier = 1.0
 	}
-	if err := s.covSvc.AddTier(covenantID, req.TierID, req.DisplayName, req.TokenMultiplier, req.MaxSlots); err != nil {
+	if err := s.covSvc.AddTier(covenantID, req.TierID, req.DisplayName, req.TokenMultiplier, req.MaxSlots, req.EntryFeeTokens); err != nil {
 		jsonError(w, err.Error(), http.StatusBadRequest)
 		return
 	}

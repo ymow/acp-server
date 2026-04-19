@@ -159,6 +159,17 @@ func (s *Service) ApproveAccessRequest(covenantID, requestID, approveLogID strin
 		return nil, fmt.Errorf("resolve platform_id for approve: %w", err)
 	}
 
+	// ACR-50 §7: entry fee is tier-level and booked as a confirmed negative
+	// ledger row at approve time (debt model). 0 = no debit; the ledger stays
+	// untouched so tiers without a fee retain the pre-4.6.C behaviour.
+	var entryFee int64
+	if err := s.db.QueryRow(
+		`SELECT entry_fee_tokens FROM access_tiers WHERE covenant_id=? AND tier_id=?`,
+		covenantID, req.TierID,
+	).Scan(&entryFee); err != nil {
+		return nil, fmt.Errorf("lookup entry_fee_tokens: %w", err)
+	}
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err
@@ -184,6 +195,22 @@ func (s *Service) ApproveAccessRequest(covenantID, requestID, approveLogID strin
 		approveLogID, nowStr, covenantID, requestID,
 	); err != nil {
 		return nil, fmt.Errorf("flip access request to approved: %w", err)
+	}
+
+	if entryFee > 0 {
+		// New member starts with no prior ledger activity, so balance_after
+		// equals -entryFee. source_ref ties the debit back to the access
+		// request; log_id to the approve audit row (chain-verifiable).
+		if _, err := tx.Exec(`
+			INSERT INTO token_ledger
+				(id, covenant_id, agent_id, delta, balance_after,
+				 source_type, source_ref, log_id, status)
+			VALUES (?, ?, ?, ?, ?, 'entry_fee', ?, ?, 'confirmed')`,
+			id.LedgerID(), covenantID, agentID, -entryFee, -entryFee,
+			requestID, approveLogID,
+		); err != nil {
+			return nil, fmt.Errorf("book entry fee: %w", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

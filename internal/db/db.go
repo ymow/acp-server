@@ -74,6 +74,9 @@ func applyMigrations(db *sql.DB) error {
 		// Enc is the §2.3 self-describing ciphertext blob (NULL until backfill).
 		`ALTER TABLE platform_identities ADD COLUMN platform_id_hash TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE platform_identities ADD COLUMN platform_id_enc BLOB`,
+		// Phase 4.6.C (ACR-50 §7): entry fee booked as a negative token_ledger row
+		// inside ApproveAccessRequest. Tier-level config; 0 keeps legacy behaviour.
+		`ALTER TABLE access_tiers ADD COLUMN entry_fee_tokens INTEGER NOT NULL DEFAULT 0`,
 	}
 	for _, stmt := range migrations {
 		if _, err := db.Exec(stmt); err != nil && !isDuplicateColumn(err) {
