@@ -29,3 +29,4 @@ func LedgerID() string  { return uuidV4() }
 func SettlementID() string { return "sout_" + random8() }
 func SessionID() string { return uuidV4() }
 func AnchorID() string  { return "anch_" + random8() }
+func AccessRequest() string { return "areq_" + random8() }
