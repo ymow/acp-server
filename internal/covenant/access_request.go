@@ -83,15 +83,25 @@ func (s *Service) CreateAccessRequest(covenantID, platformID, tierID, paymentRef
 		enc = blob
 	}
 
-	requestID := id.AccessRequest()
 	now := time.Now().UTC()
+	nowStr := now.Format(time.RFC3339Nano)
+
+	// Upsert platform_identities so that on approve we can resolve the
+	// plaintext platform_id (needed for covenant_members FK) by joining on
+	// platform_id_hash. INSERT OR IGNORE keeps this idempotent for repeat
+	// applicants.
+	if err := upsertPlatformIdentity(s.db, s.sealer, platformID, nowStr); err != nil {
+		return nil, fmt.Errorf("upsert platform identity: %w", err)
+	}
+
+	requestID := id.AccessRequest()
 	if _, err := s.db.Exec(`
 		INSERT INTO agent_access_requests
 			(request_id, covenant_id, platform_id_hash, platform_id_enc,
 			 tier_id, payment_ref, self_declaration, status, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
 		requestID, covenantID, hash, enc,
-		tierID, paymentRef, selfDeclaration, now.Format(time.RFC3339Nano),
+		tierID, paymentRef, selfDeclaration, nowStr,
 	); err != nil {
 		return nil, fmt.Errorf("insert access request: %w", err)
 	}
@@ -121,6 +131,94 @@ func (s *Service) GetAccessRequest(covenantID, requestID string) (*AccessRequest
 		covenantID, requestID,
 	)
 	return scanAccessRequest(row)
+}
+
+// ApproveAccessRequest flips a pending request to 'approved' and activates
+// the applicant as a covenant_members row in one transaction. Plaintext
+// platform_id is resolved via platform_identities (upserted at apply time),
+// so approve never needs the applicant to retransmit it.
+//
+// Idempotency: a second call on an already-resolved request returns
+// ErrAccessRequestResolved. approveLogID is the audit log entry that
+// authorized this approval — stored so the member row is traceable back
+// through the hash chain.
+func (s *Service) ApproveAccessRequest(covenantID, requestID, approveLogID string) (*Member, error) {
+	req, err := s.GetAccessRequest(covenantID, requestID)
+	if err != nil {
+		return nil, err
+	}
+	if req.Status != "pending" {
+		return nil, ErrAccessRequestResolved
+	}
+
+	var plaintext string
+	if err := s.db.QueryRow(
+		`SELECT platform_id FROM platform_identities WHERE platform_id_hash=?`,
+		req.PlatformIDHash,
+	).Scan(&plaintext); err != nil {
+		return nil, fmt.Errorf("resolve platform_id for approve: %w", err)
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	now := time.Now().UTC()
+	nowStr := now.Format(time.RFC3339Nano)
+	agentID := id.Agent()
+
+	if _, err := tx.Exec(`
+		INSERT INTO covenant_members (covenant_id, platform_id, agent_id, tier_id, is_owner, status, joined_at)
+		VALUES (?, ?, ?, ?, 0, 'active', ?)`,
+		covenantID, plaintext, agentID, req.TierID, nowStr,
+	); err != nil {
+		return nil, fmt.Errorf("insert covenant_member on approve: %w", err)
+	}
+
+	if _, err := tx.Exec(`
+		UPDATE agent_access_requests
+		SET status='approved', approve_log_id=?, resolved_at=?
+		WHERE covenant_id=? AND request_id=?`,
+		approveLogID, nowStr, covenantID, requestID,
+	); err != nil {
+		return nil, fmt.Errorf("flip access request to approved: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+
+	return &Member{
+		CovenantID: covenantID,
+		PlatformID: plaintext,
+		AgentID:    agentID,
+		TierID:     req.TierID,
+		Status:     "active",
+		JoinedAt:   now,
+	}, nil
+}
+
+// RejectAccessRequest marks a pending request as rejected with an
+// operator-supplied reason. No covenant_members row is created. Idempotent
+// by the same rule as approve.
+func (s *Service) RejectAccessRequest(covenantID, requestID, reason, rejectLogID string) error {
+	req, err := s.GetAccessRequest(covenantID, requestID)
+	if err != nil {
+		return err
+	}
+	if req.Status != "pending" {
+		return ErrAccessRequestResolved
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err = s.db.Exec(`
+		UPDATE agent_access_requests
+		SET status='rejected', reject_reason=?, reject_log_id=?, resolved_at=?
+		WHERE covenant_id=? AND request_id=?`,
+		reason, rejectLogID, now, covenantID, requestID,
+	)
+	return err
 }
 
 // ListPendingAccessRequests returns every pending request for an owner
