@@ -67,11 +67,24 @@ func applyMigrations(db *sql.DB) error {
 		`ALTER TABLE covenants ADD COLUMN git_twin_url TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE covenants ADD COLUMN git_twin_provider TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE covenants ADD COLUMN git_twin_config_json TEXT NOT NULL DEFAULT ''`,
+		// Phase 4.5.3 (ACR-700): at-rest encryption shape for platform_id.
+		// Additive only — the plaintext platform_id column stays put until
+		// 4.5.4 cuts writers over and 4.5.7 doctor gates the drop. Hash is
+		// SHA-256(plaintext) as 64-char hex (indexable, not confidential).
+		// Enc is the §2.3 self-describing ciphertext blob (NULL until backfill).
+		`ALTER TABLE platform_identities ADD COLUMN platform_id_hash TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE platform_identities ADD COLUMN platform_id_enc BLOB`,
 	}
 	for _, stmt := range migrations {
 		if _, err := db.Exec(stmt); err != nil && !isDuplicateColumn(err) {
 			return err
 		}
+	}
+	// Partial index — omits legacy rows whose hash hasn't been backfilled yet
+	// so the index stays dense through the 4.5.4 cutover.
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_platform_identities_hash
+		ON platform_identities(platform_id_hash) WHERE platform_id_hash != ''`); err != nil {
+		return err
 	}
 	// Backfill owner_id for pre-migration rows. Idempotent: WHERE owner_id=''
 	// skips rows already populated; EXISTS guard avoids NULL → NOT NULL violation
