@@ -127,6 +127,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /tools/list_members", s.handleListMembers)
 	s.mux.HandleFunc("POST /tools/get_token_history", s.handleGetTokenHistory)
 	s.mux.HandleFunc("POST /tools/get_concentration_status", s.handleGetConcentrationStatus)
+	s.mux.HandleFunc("POST /tools/get_agent_access_status", s.handleGetAgentAccessStatus)
 
 	// ── Audit & verification ─────────────────────────────────────────────────
 	s.mux.HandleFunc("GET /covenants/{covenant_id}/audit/verify", s.handleVerifyChain)
@@ -310,6 +311,58 @@ func (s *Server) handleApplyToCovenant(w http.ResponseWriter, r *http.Request) {
 		"platform_id_hash_prefix": hashPrefix,
 		"created_at":              ar.CreatedAt,
 	})
+}
+
+// handleGetAgentAccessStatus is the ACR-50 §2.3 applicant poll path. The
+// applicant has no session token yet (they are not in the covenant until
+// approved) so this endpoint is unauthenticated — protection comes from the
+// 64-bit random request_id plus covenant_id scoping, which together prevent
+// both cross-covenant fishing and bulk enumeration.
+//
+// The response intentionally omits payment_ref, self_declaration, and all
+// hash/platform fields: the applicant already knows what they submitted,
+// and publishing those back would turn this endpoint into a PII echo.
+func (s *Server) handleGetAgentAccessStatus(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Params struct {
+			CovenantID string `json:"covenant_id"`
+			RequestID  string `json:"request_id"`
+		} `json:"params"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	if body.Params.CovenantID == "" || body.Params.RequestID == "" {
+		jsonError(w, "covenant_id and request_id are required", http.StatusBadRequest)
+		return
+	}
+	ar, err := s.covSvc.GetAccessRequest(body.Params.CovenantID, body.Params.RequestID)
+	if err != nil {
+		// ErrNoAccessRequest collapses both "wrong covenant" and "wrong
+		// request_id" into the same 404 so an attacker cannot use error
+		// distinctions to confirm a request exists on a different covenant.
+		if errors.Is(err, covenant.ErrNoAccessRequest) {
+			jsonError(w, "access request not found", http.StatusNotFound)
+			return
+		}
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	resp := map[string]any{
+		"request_id":  ar.RequestID,
+		"covenant_id": ar.CovenantID,
+		"tier_id":     ar.TierID,
+		"status":      ar.Status,
+		"created_at":  ar.CreatedAt.Format(time.RFC3339Nano),
+	}
+	if ar.ResolvedAt != nil {
+		resp["resolved_at"] = ar.ResolvedAt.Format(time.RFC3339Nano)
+	}
+	if ar.Status == "rejected" && ar.RejectReason != "" {
+		resp["reject_reason"] = ar.RejectReason
+	}
+	jsonOK(w, resp)
 }
 
 func (s *Server) handleGetCovenant(w http.ResponseWriter, r *http.Request) {
