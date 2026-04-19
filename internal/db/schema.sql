@@ -227,6 +227,32 @@ CREATE TABLE IF NOT EXISTS anti_gaming_policies (
   updated_at              TEXT NOT NULL
 );
 
+-- ── Agent Access Requests (ACR-50 Part 2/7) ──────────────────────────────
+-- Creator-side application flow: apply_to_covenant creates one row with
+-- status='pending'; approve_agent_access flips it to 'approved' (and writes
+-- a covenant_members row); reject_agent_access flips it to 'rejected'.
+-- platform_id is stored both as hash (indexable) and sealed blob (ACR-700
+-- §2.3); plaintext is never written.
+CREATE TABLE IF NOT EXISTS agent_access_requests (
+  request_id        TEXT PRIMARY KEY,          -- areq_{random8}
+  covenant_id       TEXT NOT NULL REFERENCES covenants(covenant_id),
+  platform_id_hash  TEXT NOT NULL,             -- ACR-700 §4: SHA-256 hex lookup key
+  platform_id_enc   BLOB,                      -- ACR-700 §2.3 ciphertext; NULL only when sealer offline
+  tier_id           TEXT NOT NULL,
+  payment_ref       TEXT NOT NULL DEFAULT '',  -- applicant-supplied receipt handle (opaque to server)
+  self_declaration  TEXT NOT NULL DEFAULT '',  -- ACR-50 §2: applicant's own attestation text
+  status            TEXT NOT NULL DEFAULT 'pending',  -- pending | approved | rejected
+  reject_reason     TEXT NOT NULL DEFAULT '',
+  approve_log_id    TEXT NOT NULL DEFAULT '',  -- ACR-300 row for the owner's approve decision
+  reject_log_id     TEXT NOT NULL DEFAULT '',
+  created_at        TEXT NOT NULL,             -- RFC3339 UTC
+  resolved_at       TEXT                       -- NULL until approved/rejected
+);
+CREATE INDEX IF NOT EXISTS idx_agent_access_requests_pending
+  ON agent_access_requests(covenant_id, status) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_agent_access_requests_hash
+  ON agent_access_requests(platform_id_hash);
+
 -- ── Rate-Limit Counters (ACR-20 Part 4 Layer 2) ───────────────────────────
 -- Per (covenant, agent, tool, hour-window) bucket. Phase 4.1 writes every
 -- clause-tool call to tool_name='*' (global bucket); tool_name column kept
