@@ -301,6 +301,12 @@ See [ACP_Roadmap.md](https://github.com/ymow/acp-server) for the full Phase 0–
   `PreviewFields` / `SensitiveFields` / `HashPreviewFields` / `StoreHashOnly`.
   Raw user content (e.g. draft prose) never lands in `audit_logs.params_preview`;
   only whitelisted bookkeeping fields do. Mask lengths are rune-aware.
+- **At-rest encryption** (ACR-700): `platform_id` is sealed with AES-256-GCM
+  under a versioned keyring. The reference build keeps keys on local disk
+  (`LocalKeyfileProvider`); pluggable `KeyProvider` interface lets operators
+  point at AWS KMS / HashiCorp Vault / GCP KMS / their HSM of choice. See
+  [`docs/key-provider.md`](docs/key-provider.md) for the contract and an
+  adapter skeleton.
 
 ---
 
