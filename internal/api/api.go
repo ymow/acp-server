@@ -117,6 +117,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /tools/reject_agent", s.ownerToolHandler(&tools.RejectAgent{}))
 	s.mux.HandleFunc("POST /tools/reject_draft", s.ownerToolHandler(&tools.RejectDraft{}))
 
+	// ── Phase 4.6 ACR-50 access gate (owner admin) ───────────────────────────
+	s.mux.HandleFunc("POST /tools/approve_agent_access", s.ownerToolHandler(&tools.ApproveAgentAccess{}))
+	s.mux.HandleFunc("POST /tools/reject_agent_access", s.ownerToolHandler(&tools.RejectAgentAccess{}))
+
 	// ── Phase 2 query tools ───────────────────────────────────────────────────
 	s.mux.HandleFunc("POST /tools/get_token_balance", s.handleGetTokenBalance)
 	s.mux.HandleFunc("POST /tools/list_members", s.handleListMembers)

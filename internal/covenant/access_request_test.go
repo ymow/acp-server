@@ -124,6 +124,130 @@ func TestGetAccessRequestScopedToCovenant(t *testing.T) {
 	}
 }
 
+func TestApproveAccessRequestHappyPath(t *testing.T) {
+	svc, covID := accessTestSvc(t, true)
+
+	ar, err := svc.CreateAccessRequest(covID, "github:applicant", "tier_a", "stripe:pi_1", "I agree.")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	mem, err := svc.ApproveAccessRequest(covID, ar.RequestID, "log_approve_1")
+	if err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	if mem.Status != "active" {
+		t.Errorf("member status = %q, want active", mem.Status)
+	}
+	if mem.AgentID == "" {
+		t.Error("member agent_id empty")
+	}
+	if mem.TierID != "tier_a" {
+		t.Errorf("tier_id = %q, want tier_a", mem.TierID)
+	}
+	if mem.PlatformID != "github:applicant" {
+		t.Errorf("plaintext platform_id not resolved: got %q", mem.PlatformID)
+	}
+
+	// Verify request row is flipped and log_id recorded.
+	reloaded, err := svc.GetAccessRequest(covID, ar.RequestID)
+	if err != nil {
+		t.Fatalf("reload request: %v", err)
+	}
+	if reloaded.Status != "approved" {
+		t.Errorf("request status = %q, want approved", reloaded.Status)
+	}
+	if reloaded.ApproveLogID != "log_approve_1" {
+		t.Errorf("approve_log_id = %q, want log_approve_1", reloaded.ApproveLogID)
+	}
+	if reloaded.ResolvedAt == nil {
+		t.Error("resolved_at not set after approve")
+	}
+}
+
+func TestApproveAccessRequestIdempotent(t *testing.T) {
+	// Second approve on a resolved request must fail — ACR-50 §7 idempotency.
+	// Enforced at the service layer, not via a DB trigger.
+	svc, covID := accessTestSvc(t, true)
+	ar, _ := svc.CreateAccessRequest(covID, "github:a", "tier_a", "", "")
+
+	if _, err := svc.ApproveAccessRequest(covID, ar.RequestID, "log1"); err != nil {
+		t.Fatalf("first approve: %v", err)
+	}
+	if _, err := svc.ApproveAccessRequest(covID, ar.RequestID, "log2"); err == nil {
+		t.Error("second approve succeeded — idempotency broken")
+	}
+}
+
+func TestApproveAccessRequestRejectsUnknown(t *testing.T) {
+	svc, covID := accessTestSvc(t, true)
+	if _, err := svc.ApproveAccessRequest(covID, "areq_does_not_exist", "log"); err == nil {
+		t.Error("expected error approving unknown request")
+	}
+}
+
+func TestRejectAccessRequestHappyPath(t *testing.T) {
+	svc, covID := accessTestSvc(t, true)
+	ar, _ := svc.CreateAccessRequest(covID, "github:applicant", "tier_a", "", "")
+
+	if err := svc.RejectAccessRequest(covID, ar.RequestID, "no slots", "log_reject_1"); err != nil {
+		t.Fatalf("reject: %v", err)
+	}
+
+	reloaded, err := svc.GetAccessRequest(covID, ar.RequestID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.Status != "rejected" {
+		t.Errorf("status = %q, want rejected", reloaded.Status)
+	}
+	if reloaded.RejectReason != "no slots" {
+		t.Errorf("reject_reason = %q, want 'no slots'", reloaded.RejectReason)
+	}
+	if reloaded.RejectLogID != "log_reject_1" {
+		t.Errorf("reject_log_id = %q", reloaded.RejectLogID)
+	}
+	if reloaded.ResolvedAt == nil {
+		t.Error("resolved_at not set after reject")
+	}
+
+	// No covenant_members row should exist for this applicant.
+	var n int
+	svc.db.QueryRow(
+		`SELECT COUNT(*) FROM covenant_members WHERE covenant_id=? AND platform_id=?`,
+		covID, "github:applicant",
+	).Scan(&n)
+	if n != 0 {
+		t.Errorf("rejected applicant got %d covenant_members rows, want 0", n)
+	}
+}
+
+func TestRejectAccessRequestIdempotent(t *testing.T) {
+	svc, covID := accessTestSvc(t, true)
+	ar, _ := svc.CreateAccessRequest(covID, "github:a", "tier_a", "", "")
+
+	if err := svc.RejectAccessRequest(covID, ar.RequestID, "first", "log1"); err != nil {
+		t.Fatalf("first reject: %v", err)
+	}
+	if err := svc.RejectAccessRequest(covID, ar.RequestID, "second", "log2"); err == nil {
+		t.Error("second reject succeeded — idempotency broken")
+	}
+}
+
+func TestApproveAccessRequestCrossCovenantScoped(t *testing.T) {
+	// A request on covenant A must not be approvable via covenant B, even if
+	// the request_id is known. Same protection as GetAccessRequest.
+	svc, covA := accessTestSvc(t, true)
+	covB, _, _ := svc.Create("B", "code", "github:ownerB")
+	svc.AddTier(covB.CovenantID, "tier_a", "A", 1.0, nil)
+	svc.Transition(covB.CovenantID, "OPEN")
+
+	ar, _ := svc.CreateAccessRequest(covA, "github:applicant", "tier_a", "", "")
+	if _, err := svc.ApproveAccessRequest(covB.CovenantID, ar.RequestID, "log"); err == nil {
+		t.Error("cross-covenant approve succeeded — scoping broken")
+	}
+}
+
 func TestListPendingAccessRequests(t *testing.T) {
 	svc, covID := accessTestSvc(t, true)
 
