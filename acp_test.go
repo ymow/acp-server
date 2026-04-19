@@ -1993,6 +1993,108 @@ func TestListMembersSurfacesPendingAccessRequests(t *testing.T) {
 	}
 }
 
+// TestGetAgentAccessStatus exercises Phase 4.6 (A): an applicant must be
+// able to poll their request status without a session token, and cross-
+// covenant fishing with a valid request_id but the wrong covenant_id
+// must be indistinguishable from "not found".
+func TestGetAgentAccessStatus(t *testing.T) {
+	dbPath := t.TempDir() + "/access_status.db"
+	conn, err := db.Open(dbPath)
+	must(t, err, "open db")
+	defer conn.Close()
+
+	covSvc := covenant.New(conn)
+	srv := httptest.NewServer(api.New(conn))
+	defer srv.Close()
+
+	covA, _, err := covSvc.Create("A", "code", "github:ownerA")
+	must(t, err, "create A")
+	must(t, covSvc.AddTier(covA.CovenantID, "contributor", "C", 1.0, nil), "tier A")
+	_, err = covSvc.Transition(covA.CovenantID, "OPEN")
+	must(t, err, "→OPEN A")
+
+	covB, _, err := covSvc.Create("B", "code", "github:ownerB")
+	must(t, err, "create B")
+	must(t, covSvc.AddTier(covB.CovenantID, "contributor", "C", 1.0, nil), "tier B")
+	_, err = covSvc.Transition(covB.CovenantID, "OPEN")
+	must(t, err, "→OPEN B")
+
+	arA, err := covSvc.CreateAccessRequest(covA.CovenantID, "github:alice", "contributor", "stripe:pi_x", "declared")
+	must(t, err, "apply A")
+
+	statusURL := srv.URL + "/tools/get_agent_access_status"
+
+	// Pending — no auth needed.
+	resp := postJSON(t, statusURL, nil, map[string]any{
+		"params": map[string]any{
+			"covenant_id": covA.CovenantID,
+			"request_id":  arA.RequestID,
+		},
+	})
+	if resp.StatusCode != 200 {
+		t.Fatalf("pending poll: status=%d body=%s", resp.StatusCode, resp.Body)
+	}
+	if resp.JSON["status"] != "pending" {
+		t.Errorf("status = %v, want pending", resp.JSON["status"])
+	}
+	for _, leaked := range []string{"payment_ref", "self_declaration", "platform_id_hash", "platform_id_hash_prefix", "platform_id"} {
+		if _, ok := resp.JSON[leaked]; ok {
+			t.Errorf("pending poll leaked %q: %s", leaked, resp.Body)
+		}
+	}
+
+	// Cross-covenant fishing: same request_id, wrong covenant → 404.
+	crossResp := postJSON(t, statusURL, nil, map[string]any{
+		"params": map[string]any{
+			"covenant_id": covB.CovenantID,
+			"request_id":  arA.RequestID,
+		},
+	})
+	if crossResp.StatusCode != 404 {
+		t.Errorf("cross-covenant poll: want 404, got %d body=%s", crossResp.StatusCode, crossResp.Body)
+	}
+
+	// Rejected state carries reject_reason; resolved_at populated.
+	must(t, covSvc.RejectAccessRequest(covA.CovenantID, arA.RequestID, "tier full", "log_reject"), "reject")
+	rejResp := postJSON(t, statusURL, nil, map[string]any{
+		"params": map[string]any{
+			"covenant_id": covA.CovenantID,
+			"request_id":  arA.RequestID,
+		},
+	})
+	if rejResp.JSON["status"] != "rejected" {
+		t.Errorf("rejected status = %v", rejResp.JSON["status"])
+	}
+	if rejResp.JSON["reject_reason"] != "tier full" {
+		t.Errorf("reject_reason = %v", rejResp.JSON["reject_reason"])
+	}
+	if rejResp.JSON["resolved_at"] == nil {
+		t.Error("resolved_at missing after reject")
+	}
+
+	// Approved state has resolved_at but no reject_reason.
+	arA2, err := covSvc.CreateAccessRequest(covA.CovenantID, "github:bob", "contributor", "", "")
+	must(t, err, "apply A2")
+	_, err = covSvc.ApproveAccessRequest(covA.CovenantID, arA2.RequestID, "log_approve")
+	must(t, err, "approve A2")
+
+	okResp := postJSON(t, statusURL, nil, map[string]any{
+		"params": map[string]any{
+			"covenant_id": covA.CovenantID,
+			"request_id":  arA2.RequestID,
+		},
+	})
+	if okResp.JSON["status"] != "approved" {
+		t.Errorf("approved status = %v", okResp.JSON["status"])
+	}
+	if okResp.JSON["resolved_at"] == nil {
+		t.Error("resolved_at missing after approve")
+	}
+	if _, ok := okResp.JSON["reject_reason"]; ok {
+		t.Error("reject_reason should not appear on approved request")
+	}
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 func must(t *testing.T, err error, label string) {
