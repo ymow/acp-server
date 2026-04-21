@@ -7,15 +7,15 @@ func TestValidatePlatformID(t *testing.T) {
 		in      string
 		wantErr bool
 	}{
-		{"github:ymow", false},
+		{"github:contributor-01", false},
 		{"gitlab:alice", false},
 		{"email:abc123def", false},
 		{"gitea:git.example.com:alice", false},
 		{"", true},
 		{":", true},
 		{"github:", true},
-		{":ymow", true},
-		{"twitter:ymow", true},
+		{":test-user", true},
+		{"twitter:test-user", true},
 		{"gitea:alice", true}, // missing host:username
 	}
 	for _, c := range cases {
@@ -30,7 +30,7 @@ func TestValidatePlatformID(t *testing.T) {
 }
 
 func TestPlatformIDFromGitHubLogin(t *testing.T) {
-	if got := PlatformIDFromGitHubLogin("ymow"); got != "github:ymow" {
+	if got := PlatformIDFromGitHubLogin("test-user"); got != "github:test-user" {
 		t.Fatalf("got %q", got)
 	}
 }

@@ -30,7 +30,6 @@ Owner creates Covenant → Participants join → Participants contribute
 Covenant: acp-server Protocol Development
 Tokens:   4,475 ink total
 Audit:    hash chain valid ✓
-Anchor:   settlements/2026-04-15-acp-server-phase1-2.json
 ```
 
 | | |
@@ -131,7 +130,6 @@ Layer 2  Git Anchor (Phase 3)
          Settlement hash committed to the repo
          Proves: public, permanent record tied to code history
          Trust model: trust git history
-         See: settlements/*.json
 
 Layer 3  On-chain Merkle Proof (Phase 7)
          Merkle root published on-chain
