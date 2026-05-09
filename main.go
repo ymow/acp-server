@@ -70,6 +70,28 @@ func runServe() {
 	}
 	defer conn.Close()
 
+	// Fail-fast on keyring misconfiguration. Lazy-loading the keyring on
+	// first encrypted-column access turned a misconfig into a silent runtime
+	// error in adjacent projects (ixdd-engine 2026-05-08 incident); we
+	// validate here so the operator gets a startup refusal instead of a
+	// post-deploy bug. We open the provider but do NOT use the returned
+	// reference — the actual sealer/provider used by the server is
+	// constructed deeper inside api.New / its consumers. The point is: if
+	// LocalKeyfileProvider can be initialised at all, the keyring directory
+	// exists, the active key is present, and its version pointer is valid.
+	if _, err := keys.NewLocalKeyfileProvider(""); err != nil {
+		log.Fatalf("keyring validation failed: %v\n\n"+
+			"acp-server can't open the master keyring. Common causes:\n"+
+			"  - ACP_KEY_FILE points at a missing path\n"+
+			"  - keys/ directory under ACP_KEY_FILE's parent dir is missing or unreadable\n"+
+			"  - active key version pointer references a deleted key version\n\n"+
+			"To recover: ensure the keyring directory + active key file exist with mode 0600.\n"+
+			"To bootstrap a new server: delete the keyring directory and acp-server will\n"+
+			"generate a fresh master key on next start (existing encrypted data will be unreadable).",
+			err)
+	}
+	log.Printf("keyring validated")
+
 	srv := api.New(conn)
 	log.Printf("acp-server listening on %s  db=%s", addr, dbPath)
 	if err := http.ListenAndServe(addr, srv); err != nil {

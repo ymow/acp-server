@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: build + test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          # We have a small dep graph + a go.sum; standard cache is fine.
+          cache: true
+
+      - name: Tidy check
+        # If go.mod / go.sum are out of sync the test run is wasted; bail early.
+        run: |
+          go mod tidy
+          if ! git diff --quiet go.mod go.sum; then
+            echo "::error::go.mod / go.sum out of sync. Run 'go mod tidy' locally and commit."
+            git --no-pager diff go.mod go.sum
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build all
+        run: go build ./...
+
+      - name: Test
+        # Race detector + verbose output. -count=1 to bypass cache (cheap; small repo).
+        run: go test -race -count=1 -timeout 5m ./...
+
+      - name: Build CLI binaries
+        # Sanity-check that each cmd/ entry compiles standalone.
+        run: |
+          for dir in cmd/*/; do
+            echo "::group::$dir"
+            go build -o /tmp/$(basename "$dir") "./$dir"
+            echo "::endgroup::"
+          done
