@@ -23,7 +23,21 @@ Owner creates Covenant → Participants join → Participants contribute
 
 ## Status
 
-**Phase 1 + Phase 2 complete.** All 8 acceptance criteria pass.
+**Phases 1 → 4 complete.** Phase 7.A (Escrow + Auto-Settlement) spec drafted (ACR-500 v0.1), implementation gated on working-group decisions. See [ACP_Roadmap.md](https://github.com/ymow/acp-server) for the full plan.
+
+| Phase | Scope | Status |
+|---|---|---|
+| 1 | MVP core, 8 ACs | ✅ |
+| 2 | Reject paths, queries, MCP transport | ✅ |
+| 2.5 | Infra hardening (ParamsPolicy, audit rebuild, int64 minor units) | ✅ |
+| 3.0 | Housekeeping (`unit_count`, `owner_id`, `budget_currency`) | ✅ |
+| 3.B | Token lifecycle (rules engine, snapshots, leave_covenant) | ✅ |
+| 3.A | Git Covenant Twin (ACR-400) | ✅ |
+| 4.1 | `rate_limit_per_hour` (ACR-20 Part 4 Layer 2) | ✅ |
+| 4.3 | `concentration_warn_pct` (ACR-20 Part 4 Layer 5) | ✅ |
+| 4.5 | `platform_id` at-rest encryption + key rotation (ACR-700) | ✅ |
+| 4.6 | Full ACR-50 access flow (`apply_to_covenant` + entry fees) | ✅ |
+| 7.A | Escrow + Auto-Settlement (USDC on Base) | 📝 spec drafting |
 
 **First real Covenant SETTLED: 2026-04-15**
 ```
@@ -93,7 +107,7 @@ DRAFT → OPEN → ACTIVE → LOCKED → SETTLED
 | LOCKED | Generate settlement output |
 | SETTLED | Final state, immutable |
 
-### Interface Catalog (10 interfaces)
+### Interface Catalog (17 tools + lifecycle endpoints)
 
 | Interface | Type | Phase |
 |-----------|------|-------|
@@ -107,6 +121,14 @@ DRAFT → OPEN → ACTIVE → LOCKED → SETTLED
 | `list_members` | query | 2 |
 | `generate_settlement_output` | settlement | 1 |
 | `confirm_settlement_output` | admin | 1 |
+| `leave_covenant` | admin | 3.B |
+| `get_token_history` | query | 3.B |
+| `configure_anti_gaming` | admin | 4.1 |
+| `get_concentration_status` | query | 4.3 |
+| `apply_to_covenant` | lifecycle | 4.6 |
+| `approve_agent_access` | admin | 4.6 |
+| `reject_agent_access` | admin | 4.6 |
+| `get_agent_access_status` | query | 4.6 |
 
 All interfaces run through the execution engine — every action is recorded in the audit log hash chain.
 
@@ -126,12 +148,13 @@ Layer 1  Hash Chain (implemented)
          reconstructs budget_spent from audit_logs ⟗ token_ledger,
          refund-aware (per ACP_Implementation_Spec_MVP Part 8).
 
-Layer 2  Git Anchor (Phase 3)
-         Settlement hash committed to the repo
+Layer 2  Git Anchor (implemented, Phase 3.A · ACR-400 v0.2)
+         ed25519-signed settlement hash written to refs/notes/acp-anchors
          Proves: public, permanent record tied to code history
-         Trust model: trust git history
+         Trust model: trust git history + signing key
+         Verify: GET /git-twin/pubkey + git log refs/notes/acp-anchors
 
-Layer 3  On-chain Merkle Proof (Phase 7)
+Layer 3  On-chain Merkle Proof (Phase 7.D, future)
          Merkle root published on-chain
          Proves: trustless, permissionless verification
          Trust model: trustless
@@ -263,7 +286,7 @@ Body:    {"params": {...}}
 
 ---
 
-## Acceptance Criteria
+## Phase 1 Acceptance Criteria
 
 | AC | Description | Status |
 |----|-------------|--------|
@@ -276,16 +299,32 @@ Body:    {"params": {...}}
 | AC-7 | Audit log hash chain is intact (`verifyChain` returns valid) | ✅ |
 | AC-8 | Settlement generated, confirmed, Covenant reaches SETTLED | ✅ |
 
+Phase 2–4 acceptance is verified by `acp_test.go`, `scenario_test.go`, `integration_test.go`, and the per-phase test files under `internal/*/`.
+
 ---
 
 ## Roadmap
 
-See [ACP_Roadmap.md](https://github.com/ymow/acp-server) for the full Phase 0–7 plan.
+See [ACP_Roadmap.md](https://github.com/ymow/acp-server) for the full Phase 0–7 plan (v0.4.3, last updated 2026-05-06).
 
-**Next: Phase 3** (split into 3.0 housekeeping → 3.B lifecycle → 3.A Git Twin)
-- `unit_count` field landed — `propose_passage` / `approve_draft` now take `unit_count` instead of `word_count`, so `code` / `music` / `research` space types can plug in without an interface change
-- Coming: multi-currency budget validation, `owner_id` vs `agent_id` split, `ACP_Constitution.md` draft
-- Flagship: ACR-400 Git Covenant Twin — `cmd/acp-git-bridge` auto-triggers ACP from git push/merge; Layer 2 settlement hash anchored in repo
+For an operator-facing snapshot of what's actually queued, see:
+- [`docs/PHASE-NEXT.md`](docs/PHASE-NEXT.md) — one-page status surface
+- [`docs/PHASE-7A-DECISIONS.md`](docs/PHASE-7A-DECISIONS.md) — the 10 ACR-500 decisions queued for working-group ratification
+- [`docs/PHASE-4.2-LAUNCH.md`](docs/PHASE-4.2-LAUNCH.md) — public-launch + observation-week checklist
+
+**Next: Phase 7.A — Escrow + Auto-Settlement** (規格中 / spec drafting)
+
+Escrow-first ordering (per Roadmap v0.4.3): Phase 7.A is now ahead of Phase 5 (cross-Covenant reputation). Reputation is a *product* of completed real transactions, not a precondition — Escrow is the minimal precondition for two strangers to safely complete their first transaction.
+
+What's drafted:
+- **ACR-500 Escrow Standard v0.1** — lock / release / refund semantics above ACR-100 §4 withdrawal
+- **10 open decisions** (custody model, lock timing, gas allocation, etc.) blocking ratification — see [`docs/PHASE-7A-DECISIONS.md`](docs/PHASE-7A-DECISIONS.md)
+
+What's deferred:
+- Phase 4.2 public release + inbound observation (1-week milestone, not code) — checklist at [`docs/PHASE-4.2-LAUNCH.md`](docs/PHASE-4.2-LAUNCH.md)
+- Phase 5 (cross-Covenant reputation) — gated on Phase 7.A real-transaction data
+- Phase 6 (Genesis migration) — gated on a mature OSS project asking to onboard
+- KMS / Vault adapters, Redis budget counter, similarity_threshold — gated on demand
 
 ---
 
@@ -315,12 +354,14 @@ See [ACP_Roadmap.md](https://github.com/ymow/acp-server) for the full Phase 0–
 ACP is an open protocol. The full specification lives in the [inkmesh/acp-spec](https://github.com/ymow/acp-server) repository:
 
 - `ACP_Implementation_Spec_MVP.md` — canonical implementation spec
-- `ACR-20` — Token Standard (Ink)
-- `ACR-50` — Access Gate
-- `ACR-60` — Budget Gate
-- `ACR-100` — Settlement Standard
-- `ACR-300` — Audit Log Standard
-- `ACR-400` — Git Covenant Twin *(Phase 3, draft)*
+- `ACR-20` v0.2 — Token Standard (Ink)
+- `ACR-50` v0.1 — Access Gate
+- `ACR-60` v0.1 — Budget Gate
+- `ACR-100` v0.3 — Settlement Standard (x402 Pull withdrawal)
+- `ACR-300` v0.2 — Audit Log Standard (hash chain @2.2)
+- `ACR-400` v0.2 — Git Covenant Twin *(implemented, Phase 3.A)*
+- `ACR-500` v0.1 — Covenant Escrow Standard *(draft, Phase 7.A blocker)*
+- `ACR-700` v0.1 — Key Management & At-Rest Encryption *(implemented, Phase 4.5)*
 
 ---
 
