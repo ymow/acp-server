@@ -1,0 +1,69 @@
+name: Observation Issue (Phase 4.2)
+description: Help us understand what brought you here. Pick the closest category — it shapes how we prioritise.
+title: "[observation] "
+labels: ["observation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for trying ACP. During Phase 4.2 we're treating every inbound issue as
+        signal about who's interested and what they actually need. The category you pick
+        below isn't a prison — pick the closest fit, we'll re-label if needed.
+
+  - type: dropdown
+    id: profile
+    attributes:
+      label: Who are you using this with?
+      description: Helps us understand the audience.
+      options:
+        - Personal / individual project
+        - Open-source organisation
+        - Company / enterprise
+        - Research / academic
+        - Just exploring, no concrete project yet
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: What kind of issue is this?
+      options:
+        - "deploy — running acp-server somewhere (Railway / Fly / Docker / VPS / KMS)"
+        - "feature — protocol surface, MCP integration, settlement flow, escrow"
+        - "compliance — security, GDPR, audit log access, data residency"
+        - "spec — questioning a design decision in an ACR document"
+        - "docs — something is unclear or wrong in the docs/site"
+        - "objection — disagreeing with the protocol's premise (this is welcome, log it)"
+        - "other"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What's happening?
+      description: One paragraph is fine. Code blocks / curl commands welcome.
+      placeholder: "I tried to deploy to Railway and the keyring directory wasn't persistent across restarts..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else?
+      description: Optional. What were you hoping ACP would solve? What blocks you from continuing?
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: signals
+    attributes:
+      label: Quick signal checks (optional)
+      description: Tick anything that applies. Helps us prioritise without you having to write more prose.
+      options:
+        - label: I've actually run acp-server locally
+        - label: I've connected an MCP client (Claude Code / Cursor / etc.)
+        - label: I'd pay for this if it solved my problem
+        - label: I'm comparing this to another tool (please name it in the body)
+        - label: I represent an organisation that would deploy this
