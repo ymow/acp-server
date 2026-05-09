@@ -8,24 +8,25 @@ tickets or fixed.
 
 ## Security
 
-### platform_id at-rest encryption
+### platform_id at-rest encryption — DONE (Phase 4.5 / ACR-700)
+
+**STATUS: ✅ DONE (Phase 4.5)** — 加密已完成；剩餘工作是移除 plaintext 欄位（Migration 006），計畫 Sprint 6 / Q3 2026-09-30 前完成。
+
 - **Spec:** `ACP_Covenant_Spec_v0.2_EN.md:159` — "platform_id stored encrypted;
-  only InkMesh internal systems can decrypt. Decryptable under legal
-  requirement; not decrypted under normal circumstances."
-- **Roadmap status:** `ACP_Roadmap.md:241` lists "platform_id KMS 加密 | AWS KMS +
-  AES-256-GCM" as future work.
-- **Current state:** `internal/covenant/covenant.go:42-52` and
-  `internal/db/schema.sql` store `platform_id` in plaintext in
-  `platform_identities` and `covenant_members`.
-- **Fix sketch:**
-  1. Add `platform_id_hash TEXT` (SHA-256) as lookup key; keep `platform_id_enc
-     TEXT` for the encrypted payload.
-  2. AES-256-GCM wrapper in `internal/crypto/` reading key from
-     `ACP_KMS_KEY` env (base64 32B) for MVP, swap for AWS KMS later.
-  3. Migration: hash + encrypt existing rows, drop plaintext column.
-  4. Update all 32 call sites across `covenant/`, `api/`, `schema.sql`,
-     `scenario_test.go`, `integration_test.go`.
-- **Trigger to do it:** before accepting real user PII / going to production.
+  only InkMesh internal systems can decrypt."
+- **Resolved (2026-04-xx, Phase 4.5):** AES-256-GCM encryption fully implemented.
+  - `platform_identities.platform_id_hash` (SHA-256 hex, indexable) +
+    `platform_id_enc` (sealed blob) written on every upsert.
+  - `internal/crypto/seal.go`: AES-256-GCM with version+key_version+nonce header.
+  - `internal/keys/local.go`: versioned keyring (v{N}.key), 0600 perms, UID check.
+  - `internal/covenant/backfill.go`: `BackfillLegacyRows()` idempotent migration.
+  - `covenant.Member.PlatformID` tagged `json:"-"`; HTTP layer never leaks it.
+  - Tests: `internal/covenant/platform_id_test.go` (6 tests including `TestMemberJSONOmitsPlatformID`).
+- **Remaining work (Migration 006):** The `platform_id` plaintext column still exists as PK in
+  `platform_identities` and FK in `covenant_members` (32 call sites). Dropping
+  it requires Migration 006 to promote `platform_id_hash` as the new key.
+  Scheduled for Sprint 6 / Q3 2026-09-30 (ACR-700 compliance deadline). Until then, the
+  plaintext column remains but is never returned in HTTP responses.
 
 ---
 

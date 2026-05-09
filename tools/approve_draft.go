@@ -38,7 +38,12 @@ func (t *ApproveDraft) CheckPreconditions(ctx *execution.Context, params map[str
 	return nil
 }
 
-func (t *ApproveDraft) EstimateCost(_ *execution.Context, _ map[string]any) int64 { return 5 }
+func (t *ApproveDraft) EstimateCost(_ *execution.Context, params map[string]any) int64 {
+	if v, ok := params["cost_cents"].(float64); ok && v >= 0 {
+		return int64(v)
+	}
+	return 5 // x402 placeholder; replaced by receipt in Phase 7.A
+}
 
 func (t *ApproveDraft) ExecuteLogic(ctx *execution.Context, params map[string]any) (map[string]any, error) {
 	logID, _ := params["log_id"].(string)

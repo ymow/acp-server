@@ -30,7 +30,12 @@ func (t *GenerateSettlement) CheckPreconditions(ctx *execution.Context, _ map[st
 	return nil
 }
 
-func (t *GenerateSettlement) EstimateCost(_ *execution.Context, _ map[string]any) int64 { return 20 }
+func (t *GenerateSettlement) EstimateCost(_ *execution.Context, params map[string]any) int64 {
+	if v, ok := params["cost_cents"].(float64); ok && v >= 0 {
+		return int64(v)
+	}
+	return 20 // x402 placeholder; replaced by receipt in Phase 7.A
+}
 
 func (t *GenerateSettlement) ExecuteLogic(_ *execution.Context, _ map[string]any) (map[string]any, error) {
 	return map[string]any{
